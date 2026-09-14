@@ -39,8 +39,10 @@ except ImportError:  # pragma: no cover - dotenv is an optional extra
 load_dotenv()
 
 # Free-tier model — usable without a paid plan or billing account
-# (see https://ai.google.dev/gemini-api/docs/models).
-_MODEL = "gemini-2.0-flash"
+# (see https://ai.google.dev/gemini-api/docs/models).  gemini-2.0-flash was
+# retired by Google (404 on the live API); gemini-3.6-flash is the current
+# replacement advertised by the API error message.
+_MODEL = "gemini-3.6-flash"
 
 _SYSTEM_PROMPT = (
     "You are a code reliability diagnostic assistant. Given a failed "
@@ -75,7 +77,7 @@ def request_ai_diagnosis(
 ) -> str:
     """Call the Google Gemini API and return the model's text response.
 
-    Uses the free-tier ``gemini-2.0-flash`` model.  Raises on any failure
+    Uses the free-tier ``gemini-3.6-flash`` model.  Raises on any failure
     (network error, bad key, ...); the caller wraps this and keeps the
     pipeline non-blocking.
     """
