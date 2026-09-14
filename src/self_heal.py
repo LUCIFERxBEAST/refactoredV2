@@ -4,7 +4,7 @@ self_heal.py — optional AI diagnosis + bounded retry for failed refactors.
 Flow inside VERIFY:
   1. the test suite fails after a change
   2. print the clearly labelled "=== Self-Heal: AI Diagnosis ===" section
-  3. if ANTHROPIC_API_KEY is configured, ask the LLM for a root-cause /
+  3. if GEMINI_API_KEY is configured, ask Google Gemini for a root-cause /
      suggested-fix diagnosis and print it, then re-run the test suite
      exactly once more ("bounded retry")
   4. keep the change if the retry passes; roll back otherwise
@@ -15,8 +15,19 @@ away (pre-existing behaviour).
 """
 
 import os
+import warnings
 
-from anthropic import Anthropic
+# Google's `google.generativeai` namespace shim emits a FutureWarning on import
+# directing users to the newer `google.genai` SDK.  The package still works
+# fine, so silence that one known message (it would otherwise print at the top
+# of every run).  See: https://github.com/google-gemini/deprecated-generative-ai-python
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        category=FutureWarning,
+        message=r"\s+All support for the `google\.generativeai` package has ended",
+    )
+    import google.generativeai as genai
 
 try:
     from dotenv import load_dotenv
@@ -27,7 +38,9 @@ except ImportError:  # pragma: no cover - dotenv is an optional extra
 # Load .env from the project root (never overrides an already-set env var).
 load_dotenv()
 
-_MODEL = "claude-sonnet-4-6"
+# Free-tier model — usable without a paid plan or billing account
+# (see https://ai.google.dev/gemini-api/docs/models).
+_MODEL = "gemini-2.0-flash"
 
 _SYSTEM_PROMPT = (
     "You are a code reliability diagnostic assistant. Given a failed "
@@ -39,8 +52,8 @@ _SYSTEM_PROMPT = (
 
 
 def has_api_key() -> bool:
-    """True when ANTHROPIC_API_KEY is present and non-empty."""
-    return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    """True when GEMINI_API_KEY is present and non-empty."""
+    return bool(os.environ.get("GEMINI_API_KEY", "").strip())
 
 
 def build_diagnosis_prompt(
@@ -60,30 +73,19 @@ def build_diagnosis_prompt(
 def request_ai_diagnosis(
     symbol: str, test_output: str, dynamic_risk_files
 ) -> str:
-    """Call the Anthropic API and return the model's text response.
+    """Call the Google Gemini API and return the model's text response.
 
-    Raises on any failure (network error, bad key, ...); the caller wraps
-    this and keeps the pipeline non-blocking.
+    Uses the free-tier ``gemini-2.0-flash`` model.  Raises on any failure
+    (network error, bad key, ...); the caller wraps this and keeps the
+    pipeline non-blocking.
     """
-    client = Anthropic()
-    message = client.messages.create(
-        model=_MODEL,
-        max_tokens=1024,
-        system=_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": build_diagnosis_prompt(
-                    symbol, test_output, dynamic_risk_files
-                ),
-            }
-        ],
+    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+    model = genai.GenerativeModel(_MODEL)
+    prompt = _SYSTEM_PROMPT + "\n\n" + build_diagnosis_prompt(
+        symbol, test_output, dynamic_risk_files
     )
-    return "".join(
-        block.text
-        for block in message.content
-        if getattr(block, "type", None) == "text"
-    )
+    response = model.generate_content(prompt)
+    return response.text
 
 
 def format_diagnosis(raw: str) -> str:

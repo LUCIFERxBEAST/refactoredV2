@@ -608,17 +608,49 @@ class TestSelfHeal:
     """Bounded LLM retry — API-key skip and retry logic (no real API calls)."""
 
     def test_skips_diagnosis_without_api_key(self, monkeypatch):
-        """No ANTHROPIC_API_KEY -> has_api_key() is False, get_diagnosis()
-        returns None, and the Anthropic API is never touched."""
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        """No GEMINI_API_KEY -> has_api_key() is False, get_diagnosis()
+        returns None, and the Gemini API is never touched."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         import src.self_heal as sh
 
         def _explode(*args, **kwargs):
-            raise AssertionError("Anthropic API must not be called")
+            raise AssertionError("Gemini API must not be called")
 
         monkeypatch.setattr(sh, "request_ai_diagnosis", _explode)
         assert sh.has_api_key() is False
         assert sh.get_diagnosis("compute_total", "tests failed", []) is None
+
+    def test_request_ai_diagnosis_uses_gemini_models(self, monkeypatch):
+        """request_ai_diagnosis() configures Gemini and builds a
+        gemini-2.0-flash prompt — verified with stubbed classes, so no real
+        network call ever happens."""
+        import src.self_heal as sh
+
+        captured = {}
+
+        class _FakeResponse:
+            text = "Root cause: renamed via getattr\nSuggested fix: patch dynamic.py"
+
+        class _FakeModel:
+            def __init__(self, model_name, **kwargs):
+                captured["model"] = model_name
+
+            def generate_content(self, prompt):
+                captured["prompt"] = prompt
+                return _FakeResponse()
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-123")
+        monkeypatch.setattr(sh.genai, "configure",
+                            lambda **kw: captured.update(kw))
+        monkeypatch.setattr(sh.genai, "GenerativeModel", _FakeModel)
+        out = sh.request_ai_diagnosis("compute_total", "FAILED",
+                                      ["pkg/dynamic.py"])
+        assert out == "Root cause: renamed via getattr\nSuggested fix: patch dynamic.py"
+        assert captured["model"] == "gemini-2.0-flash"
+        assert captured["api_key"] == "test-key-123"
+        assert "code reliability diagnostic assistant" in captured["prompt"]
+        assert "compute_total" in captured["prompt"]
+        assert "pkg/dynamic.py" in captured["prompt"]
 
     def test_verify_step_rolls_back_without_api_key(self, tmp_path, monkeypatch,
                                                    capsys):
@@ -626,7 +658,7 @@ class TestSelfHeal:
         (exit code 1) without attempting a retry."""
         repo = _sample_repo_copy(tmp_path)
         snapshot = create_snapshot(str(repo))
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         import src.main as main
         state = {"calls": 0}
 
@@ -649,7 +681,7 @@ class TestSelfHeal:
         passing retry keeps the change."""
         repo = _sample_repo_copy(tmp_path)
         snapshot = create_snapshot(str(repo))
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-123")
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-123")
         import src.main as main
         state = {"calls": 0}
 
@@ -677,7 +709,7 @@ class TestSelfHeal:
         """Diagnosis runs, retry fails too -> roll back as before."""
         repo = _sample_repo_copy(tmp_path)
         snapshot = create_snapshot(str(repo))
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-123")
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-123")
         import src.main as main
         monkeypatch.setattr(main, "run_tests",
                             lambda *a, **k: (False, "FAILED again", 1))
