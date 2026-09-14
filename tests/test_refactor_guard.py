@@ -652,8 +652,34 @@ class TestSelfHeal:
         assert captured["model"] == "gemini-3.6-flash"
         assert captured["api_key"] == "test-key-123"
         assert "code reliability diagnostic assistant" in captured["prompt"]
+        assert "Do not suggest hardcoding a specific value" in captured["prompt"]
+        assert "address the underlying general behavior" in captured["prompt"]
         assert "compute_total" in captured["prompt"]
         assert "pkg/dynamic.py" in captured["prompt"]
+
+    def test_hardcoding_warning_triggered_on_narrow_suggestion(self):
+        """When AI suggests a narrow or hardcoded fix, format_diagnosis appends a warning."""
+        from src.self_heal import format_diagnosis, _check_for_hardcoding
+
+        raw = (
+            "Root cause: dynamic getattr failed\n"
+            "Suggested fix: just return 42 for this specific test case."
+        )
+        assert _check_for_hardcoding(raw) is True
+        formatted = format_diagnosis(raw)
+        assert "⚠ This suggested fix may be overly specific to this one case" in formatted
+
+    def test_no_hardcoding_warning_on_general_suggestion(self):
+        """A general fix suggestion does not trigger the hardcoding warning."""
+        from src.self_heal import format_diagnosis, _check_for_hardcoding
+
+        raw = (
+            "Root cause: dynamic getattr failed\n"
+            "Suggested fix: replace getattr with direct attribute access or update string literal"
+        )
+        assert _check_for_hardcoding(raw) is False
+        formatted = format_diagnosis(raw)
+        assert "⚠ This suggested fix may be overly specific" not in formatted
 
     def test_verify_step_rolls_back_without_api_key(self, tmp_path, monkeypatch,
                                                    capsys):

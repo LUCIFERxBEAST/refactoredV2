@@ -96,6 +96,19 @@ def request_ai_diagnosis(
     return response.text
 
 
+def _check_for_hardcoding(text: str) -> bool:
+    """Return True if the text looks like it suggests a hardcoded/narrow fix."""
+    patterns = [
+        "just return",
+        "hardcode",
+        "special case",
+        "for this specific",
+        "only for this test",
+    ]
+    low = text.lower()
+    return any(p in low for p in patterns)
+
+
 def format_diagnosis(raw: str) -> str:
     """Post-process the model reply into 🔍/💡 formatted lines.
 
@@ -123,24 +136,17 @@ def format_diagnosis(raw: str) -> str:
         else:
             lines.append(f"  {stripped}")
     if not root_found and not fix_found:
-def _check_for_hardcoding(text: str) -> bool:
-    \"\"\"Return True if the text looks like it suggests a hardcoded/narrow fix.\"\"\"
-    patterns = [
-        "just return",
-        "hardcode",
-        "special case",
-        "for this specific",
-        "only for this test",
-    ]
-    low = text.lower()
-    return any(p in low for p in patterns)
-
-
         # no markers — dump the whole reply verbatim
-        return "\n".join(
+        res = "\n".join(
             f"  {l}" for l in raw.splitlines() if l.strip()
         )
+        if _check_for_hardcoding(raw):
+            res += ("\n  ⚠ This suggested fix may be overly specific to this one case — review it "
+                    "carefully before applying, and consider whether the general logic needs "
+                    "fixing instead.")
+        return res
     return "\n".join(lines)
+
 
 
 def get_diagnosis(symbol: str, test_output: str, dynamic_risk_files):
