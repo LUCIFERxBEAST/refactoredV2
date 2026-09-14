@@ -108,7 +108,9 @@ def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
     """STEP 5. Returns process exit code (0 = success)."""
     print()
     print("=" * 60)
-    print(f"  STEP 5: VERIFY — running test suite: {test_cmd}")
+    print("  STEP 5: VERIFY")
+    print("  → Running the project's real tests to make sure nothing broke...")
+    print(f"  (Technical) running test suite: {test_cmd}")
     print("=" * 60)
     passed, output, code = run_tests(repo_root, test_cmd)
     if output.strip():
@@ -123,6 +125,12 @@ def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
         print("=" * 60)
         cleanup_snapshot(snapshot)
         print(f"  Backup deleted: {snapshot}")
+        print()
+        print("=" * 44)
+        print("SUMMARY: All tests passed — the project should be safe.")
+        print("Result: SUCCESS — kept changes")
+        print("Reason: Verification matched expectations")
+        print("=" * 44)
         return 0
 
     print()
@@ -161,6 +169,12 @@ def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
     cleanup_snapshot(snapshot)
     print("  Backup deleted.")
     print()
+    print("=" * 44)
+    print("SUMMARY: FAILED — changes were automatically undone, project is back to how it was before.")
+    print("Result: FAILED — automatically undone, project unchanged")
+    print("Reason: Tests failed after the change.")
+    print("=" * 44)
+    print()
     print("=" * 60)
     print("  DIAGNOSIS")
     print("=" * 60)
@@ -171,7 +185,9 @@ def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
 def _snapshot_step(repo_root: str) -> str:
     print()
     print("=" * 60)
-    print("  STEP 3: SNAPSHOT — backing up repo before editing")
+    print("  STEP 3: SNAPSHOT")
+    print("  → Backing up the entire project first, so this can always be undone.")
+    print("  (Technical) backing up repo before editing")
     print("=" * 60)
     snapshot = create_snapshot(repo_root)
     print(f"  Backup created at: {snapshot}")
@@ -199,7 +215,9 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str) -> int:
 
     # ── 1. MAP ────────────────────────────────────────────────────────────
     print("=" * 60)
-    print(f"  STEP 1: MAP — scanning for references to '{symbol}'")
+    print("  STEP 1: MAP")
+    print("  → Looking through the entire project to find every place this code is used...")
+    print(f"  (Technical) scanning for references to '{symbol}'")
     print("=" * 60)
     if not os.path.isdir(repo_root):
         print(f"ERROR: repo root does not exist: {repo_root}")
@@ -231,7 +249,10 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str) -> int:
     # ── 2. WARN ───────────────────────────────────────────────────────────
     print()
     print("=" * 60)
-    print("  STEP 2: WARN — dynamic-risk check (nothing changed yet)")
+    print("  STEP 2: WARN")
+    print("  → Found some risky spots where the name is only used as text (not real code) —")
+    print("    these can't be safely auto-changed, so I'll flag them instead of guessing.")
+    print("  (Technical) dynamic-risk check (nothing changed yet)")
     print("=" * 60)
     if result.has_dynamic_risk:
         print(f"  ⚠ WARNING: '{symbol}' appears inside string literals in:")
@@ -253,7 +274,9 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str) -> int:
     # ── 4. ACT ────────────────────────────────────────────────────────────
     print()
     print("=" * 60)
-    print(f"  STEP 4: ACT — renaming '{symbol}' → '{to}' in static files")
+    print("  STEP 4: ACT")
+    print("  → Applying the change to the files I'm confident about...")
+    print(f"  (Technical) renaming '{symbol}' → '{to}' in static files")
     print("=" * 60)
     try:
         changes = rename_in_files(repo_root, symbol, to, result.static_files)
@@ -293,7 +316,9 @@ def do_extract(repo_root: str, rel_file: str, start: int, end: int,
 
     # ── 1. MAP ────────────────────────────────────────────────────────────
     print("=" * 60)
-    print(f"  STEP 1: MAP — analyzing block {start}-{end} of {rel_file}")
+    print("  STEP 1: MAP")
+    print("  → Locating the exact code block so we can lift it safely...")
+    print(f"  (Technical) analyzing block {start}-{end} of {rel_file}")
     print("=" * 60)
     if not os.path.isfile(filepath):
         print(f"ERROR: file not found: {filepath}")
@@ -331,7 +356,9 @@ def do_extract(repo_root: str, rel_file: str, start: int, end: int,
     # ── 4. ACT ────────────────────────────────────────────────────────────
     print()
     print("=" * 60)
-    print(f"  STEP 4: ACT — extracting block to '{name}'")
+    print("  STEP 4: ACT")
+    print("  → Applying the change to the files I'm confident about...")
+    print(f"  (Technical) extracting block to '{name}'")
     print("=" * 60)
     try:
         rel, _plan = extract_into_file(repo_root, rel_file, start, end, name)
@@ -352,7 +379,9 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
 
     # ── 1. MAP ────────────────────────────────────────────────────────────
     print("=" * 60)
-    print(f"  STEP 1: MAP — scanning for references to '{symbol}'")
+    print("  STEP 1: MAP")
+    print("  → Looking through the entire project to find every place this code is used...")
+    print(f"  (Technical) scanning for references to '{symbol}'")
     print("=" * 60)
     if not os.path.isdir(repo_root):
         print(f"ERROR: repo root does not exist: {repo_root}")
@@ -389,7 +418,10 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
     # ── 2. WARN ───────────────────────────────────────────────────────────
     print()
     print("=" * 60)
-    print("  STEP 2: WARN — dynamic-risk check (nothing changed yet)")
+    print("  STEP 2: WARN")
+    print("  → Found some risky spots where the name is only used as text (not real code) —")
+    print("    these can't be safely auto-changed, so I'll flag them instead of guessing.")
+    print("  (Technical) dynamic-risk check (nothing changed yet)")
     print("=" * 60)
     if result.has_dynamic_risk:
         print(f"  ⚠ WARNING: '{symbol}' appears inside string literals in:")
@@ -410,7 +442,9 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
     # ── 4. ACT ────────────────────────────────────────────────────────────
     print()
     print("=" * 60)
-    print(f"  STEP 4: ACT — moving '{symbol}' to {target}")
+    print("  STEP 4: ACT")
+    print("  → Applying the change to the files I'm confident about...")
+    print(f"  (Technical) moving '{symbol}' to {target}")
     print("=" * 60)
     try:
         changes = apply_move_symbol(repo_root, symbol, source, target)
