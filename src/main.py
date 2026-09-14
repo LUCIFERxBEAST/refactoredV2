@@ -18,6 +18,24 @@ import argparse
 import os
 import sys
 
+import colorama
+from colorama import Fore, Style
+
+colorama.init()
+
+
+def _green(s: str) -> str:
+    return f"{Fore.GREEN}{s}{Style.RESET_ALL}"
+
+
+def _yellow(s: str) -> str:
+    return f"{Fore.YELLOW}{s}{Style.RESET_ALL}"
+
+
+def _red(s: str) -> str:
+    return f"{Fore.RED}{s}{Style.RESET_ALL}"
+
+
 from .dependency_graph import blast_radius, scan_repo
 from .extract_function import analyze_block, extract_into_file
 from .move_symbol import move_symbol as apply_move_symbol
@@ -54,6 +72,10 @@ def build_parser():
         "--test-cmd", required=True,
         help="Test command to verify, e.g. 'pytest -q'",
     )
+    rename_p.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="Simulate the refactoring without modifying files on disk or running tests",
+    )
 
     extract_p = sub.add_parser(
         "extract-function",
@@ -79,6 +101,10 @@ def build_parser():
         "--test-cmd", required=True,
         help="Test command to verify, e.g. 'pytest -q'",
     )
+    extract_p.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="Simulate the refactoring without modifying files on disk or running tests",
+    )
 
     move_p = sub.add_parser(
         "move-symbol",
@@ -101,10 +127,15 @@ def build_parser():
         "--test-cmd", required=True,
         help="Test command to verify, e.g. 'pytest -q'",
     )
+    move_p.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="Simulate the refactoring without modifying files on disk or running tests",
+    )
     return parser
 
 def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
-                 symbol: str, dynamic_files) -> int:
+                 symbol: str, dynamic_files, action_desc: str = "",
+                 changed_files: list = None) -> int:
     """STEP 5. Returns process exit code (0 = success)."""
     print()
     print("=" * 60)
@@ -120,30 +151,36 @@ def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
 
     if passed:
         print()
-        print("=" * 60)
-        print("  SUCCESS ✓ — All tests pass. Change is kept.")
-        print("=" * 60)
+        print(_green("=" * 60))
+        print(_green("  SUCCESS ✓ — All tests pass. Change is kept."))
+        print(_green("=" * 60))
         cleanup_snapshot(snapshot)
-        print(f"  Backup deleted: {snapshot}")
+        print(_green(f"  Backup deleted: {snapshot}"))
         print()
-        print("=" * 44)
-        print("SUMMARY: SUCCESS — pipeline completed safely")
-        print("Changed files: see STEP 1 static-file list (edits only applied to those files)")
-        print("Risk files: see STEP 1 dynamic-risk list (not auto-changed)")
-        print("Outcome: VERIFY passed; rollback not performed")
-        print("=" * 44)
+        print(_green("=" * 60))
+        print(_green("SUMMARY: SUCCESS — pipeline completed safely"))
+        print(_green(f"What you asked to do: {action_desc if action_desc else f'Refactor symbol {symbol}'}"))
+        if changed_files:
+            print(_green(f"Files actually changed: {', '.join(changed_files)}"))
+        print(_green("Changed files: see STEP 1 static-file list (edits only applied to those files)"))
+        if dynamic_files:
+            print(_green(f"Risky files skipped/flagged: {', '.join(dynamic_files)}"))
+        print(_green("Risk files: see STEP 1 dynamic-risk list (not auto-changed)"))
+        print(_green("Final outcome: SUCCESS — All tests passed!"))
+        print(_green("Outcome: VERIFY passed; rollback not performed"))
+        print(_green("=" * 60))
         return 0
 
     print()
-    print("=" * 60)
-    print("  === Self-Heal: AI Diagnosis ===")
-    print("=" * 60)
+    print(_yellow("=" * 60))
+    print(_yellow("  === Self-Heal: AI Diagnosis ==="))
+    print(_yellow("=" * 60))
     if has_api_key():
         diagnosis = get_diagnosis(symbol, output, dynamic_files)
         if diagnosis:
-            print(diagnosis)
+            print(_yellow(diagnosis))
         print()
-        print("  Retrying test suite exactly once…")
+        print(_yellow("  Retrying test suite exactly once…"))
         passed2, output2, code2 = run_tests(repo_root, test_cmd)
         if output2.strip():
             for line in output2.strip().splitlines():
@@ -151,36 +188,55 @@ def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
         print(f"  Exit code: {code2}")
         if passed2:
             print()
-            print("=" * 60)
-            print("  SUCCESS ✓ — AI diagnosis helped resolve a transient "
-                  "issue. Change is kept.")
-            print("=" * 60)
+            print(_green("=" * 60))
+            print(_green("  SUCCESS ✓ — AI diagnosis helped resolve a transient "
+                        "issue. Change is kept."))
+            print(_green("=" * 60))
             cleanup_snapshot(snapshot)
-            print(f"  Backup deleted: {snapshot}")
+            print(_green(f"  Backup deleted: {snapshot}"))
+            print()
+            print(_green("=" * 60))
+            print(_green("SUMMARY: SUCCESS — pipeline completed safely"))
+            print(_green(f"What you asked to do: {action_desc if action_desc else f'Refactor symbol {symbol}'}"))
+            if changed_files:
+                print(_green(f"Files actually changed: {', '.join(changed_files)}"))
+            print(_green("Changed files: see STEP 1 static-file list (edits only applied to those files)"))
+            if dynamic_files:
+                print(_green(f"Risky files skipped/flagged: {', '.join(dynamic_files)}"))
+            print(_green("Risk files: see STEP 1 dynamic-risk list (not auto-changed)"))
+            print(_green("Final outcome: SUCCESS — Tests passed on retry!"))
+            print(_green("Outcome: VERIFY passed; rollback not performed"))
+            print(_green("=" * 60))
             return 0
     else:
-        print("  Skipping AI diagnosis — no API key configured")
+        print(_yellow("  Skipping AI diagnosis — no API key configured"))
 
     print()
-    print("=" * 60)
-    print("  FAILURE ✗ — tests failed after the change. Rolling back…")
-    print("=" * 60)
+    print(_red("=" * 60))
+    print(_red("  FAILURE ✗ — tests failed after the change. Rolling back…"))
+    print(_red("=" * 60))
     restore_snapshot(snapshot, repo_root)
-    print("  Repo restored from snapshot.")
+    print(_red("  Repo restored from snapshot."))
     cleanup_snapshot(snapshot)
-    print("  Backup deleted.")
+    print(_red("  Backup deleted."))
     print()
-    print("=" * 44)
-    print("SUMMARY: FAILURE — VERIFY failed; changes were automatically undone")
-    print("Changed files: see STEP 1 static-file list (rolled back after tests failed)")
-    print("Risk files: see STEP 1 dynamic-risk list (not auto-changed)")
-    print("Outcome: repository restored from snapshot; rollback performed")
-    print("=" * 44)
+    print(_red("=" * 60))
+    print(_red("SUMMARY: FAILURE — VERIFY failed; changes were automatically undone"))
+    print(_red(f"What you asked to do: {action_desc if action_desc else f'Refactor symbol {symbol}'}"))
+    if changed_files:
+        print(_red(f"Files affected (rolled back): {', '.join(changed_files)}"))
+    print(_red("Changed files: see STEP 1 static-file list (rolled back after tests failed)"))
+    if dynamic_files:
+        print(_red(f"Risky files skipped/flagged: {', '.join(dynamic_files)}"))
+    print(_red("Risk files: see STEP 1 dynamic-risk list (not auto-changed)"))
+    print(_red("Final outcome: ROLLED BACK — Tests failed; changes were undone."))
+    print(_red("Outcome: repository restored from snapshot; rollback performed"))
+    print(_red("=" * 60))
     print()
-    print("=" * 60)
-    print("  DIAGNOSIS")
-    print("=" * 60)
-    print(diagnose_failures(output, symbol, dynamic_files))
+    print(_red("=" * 60))
+    print(_red("  DIAGNOSIS"))
+    print(_red("=" * 60))
+    print(_red(diagnose_failures(output, symbol, dynamic_files)))
     return 1
 
 
@@ -212,7 +268,8 @@ def _print_blast_radius(repo_root: str, symbol: str) -> None:
         print("    (none)")
 
 
-def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str) -> int:
+def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str,
+              dry_run: bool = False) -> int:
     repo_root = os.path.abspath(repo_root)
 
     # ── 1. MAP ────────────────────────────────────────────────────────────
@@ -222,7 +279,7 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str) -> int:
     print(f"  (Technical) scanning for references to '{symbol}'")
     print("=" * 60)
     if not os.path.isdir(repo_root):
-        print(f"ERROR: repo root does not exist: {repo_root}")
+        print(_red(f"ERROR: repo root does not exist: {repo_root}"))
         return 2
 
     print(f"  Scanning: {repo_root}")
@@ -245,7 +302,7 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str) -> int:
     _print_blast_radius(repo_root, symbol)
 
     if not result.static_files:
-        print(f"\n  WARNING: no static references to '{symbol}' found; nothing to do.")
+        print(_yellow(f"\n  WARNING: no static references to '{symbol}' found; nothing to do."))
         return 0
 
     # ── 2. WARN ───────────────────────────────────────────────────────────
@@ -257,18 +314,35 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str) -> int:
     print("  (Technical) dynamic-risk check (nothing changed yet)")
     print("=" * 60)
     if result.has_dynamic_risk:
-        print(f"  ⚠ WARNING: '{symbol}' appears inside string literals in:")
+        print(_yellow(f"  ⚠ WARNING: '{symbol}' appears inside string literals in:"))
         for f in result.dynamic_risk_files:
-            print(f"    - {f}")
+            print(_yellow(f"    - {f}"))
         if language_of_files(result.dynamic_risk_files) == {"javascript"}:
-            print("  These files access the symbol by name at runtime "
-                  "(e.g. obj['name'] — bracket-notation member access).")
+            print(_yellow("  These files access the symbol by name at runtime "
+                          "(e.g. obj['name'] — bracket-notation member access)."))
         else:
-            print("  These files use the symbol dynamically "
-                  "(e.g. getattr(obj, 'name')).")
-        print("  They will NOT be renamed automatically.")
+            print(_yellow("  These files use the symbol dynamically "
+                          "(e.g. getattr(obj, 'name'))."))
+        print(_yellow("  They will NOT be renamed automatically."))
     else:
-        print("  No dynamic-risk references detected — safe to proceed.")
+        print(_green("  No dynamic-risk references detected — safe to proceed."))
+
+    if dry_run:
+        print()
+        print(_yellow("=" * 60))
+        print(_yellow("DRY-RUN SUMMARY — no changes were made to disk"))
+        print(_yellow(f"What you asked to do: Rename symbol '{symbol}' → '{to}'"))
+        if result.static_files:
+            print(_yellow(f"Files that would be changed: {', '.join(result.static_files)}"))
+        else:
+            print(_yellow("Files that would be changed: (none)"))
+        if result.dynamic_risk_files:
+            print(_yellow(f"Risky files flagged/skipped: {', '.join(result.dynamic_risk_files)}"))
+        else:
+            print(_yellow("Risky files flagged/skipped: (none)"))
+        print(_yellow("Final outcome: DRY-RUN COMPLETED (Snapshot, Act, and Verify steps skipped)"))
+        print(_yellow("=" * 60))
+        return 0
 
     # ── 3. SNAPSHOT ───────────────────────────────────────────────────────
     snapshot = _snapshot_step(repo_root)
@@ -287,32 +361,24 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str) -> int:
             print(f"    {f}: {count} replacement(s)")
             total_edits += count
         if total_edits == 0:
-            print("  WARNING: no text replacements were actually performed!")
+            print(_yellow("  WARNING: no text replacements were actually performed!"))
         else:
             print(f"  Total replacements across {len(changes)} file(s): {total_edits}")
     except Exception as e:
-        print(f"  ERROR during rename: {e}")
+        print(_red(f"  ERROR during rename: {e}"))
         restore_snapshot(snapshot, repo_root)
         cleanup_snapshot(snapshot)
         return 1
 
     # ── 5. VERIFY ─────────────────────────────────────────────────────────
+    action_desc = f"Rename symbol '{symbol}' → '{to}' across codebase"
     return _verify_step(repo_root, test_cmd, snapshot, symbol,
-                        result.dynamic_risk_files)
+                        result.dynamic_risk_files, action_desc=action_desc,
+                        changed_files=result.static_files)
 
 
-def main():
-    parser = build_parser()
-    args = parser.parse_args()
-    if args.command == "rename":
-        code = do_rename(args.repo_root, args.symbol, args.to, args.test_cmd)
-        sys.exit(code)
-
-
-if __name__ == "__main__":
-    main()
 def do_extract(repo_root: str, rel_file: str, start: int, end: int,
-               name: str, test_cmd: str) -> int:
+               name: str, test_cmd: str, dry_run: bool = False) -> int:
     repo_root = os.path.abspath(repo_root)
     filepath = os.path.join(repo_root, rel_file)
 
@@ -323,7 +389,7 @@ def do_extract(repo_root: str, rel_file: str, start: int, end: int,
     print(f"  (Technical) analyzing block {start}-{end} of {rel_file}")
     print("=" * 60)
     if not os.path.isfile(filepath):
-        print(f"ERROR: file not found: {filepath}")
+        print(_red(f"ERROR: file not found: {filepath}"))
         return 2
 
     with open(filepath, "r", encoding="utf-8") as f:
@@ -331,7 +397,7 @@ def do_extract(repo_root: str, rel_file: str, start: int, end: int,
 
     plan = analyze_block(source, start, end)
     if plan is None:
-        print(f"ERROR: lines {start}-{end} are empty or outside the file.")
+        print(_red(f"ERROR: lines {start}-{end} are empty or outside the file."))
         return 2
 
     print(f"  Block found inside function '{plan.enclosing_function_name}'")
@@ -343,6 +409,8 @@ def do_extract(repo_root: str, rel_file: str, start: int, end: int,
     print()
     print("=" * 60)
     print("  STEP 2: WARN — check before changing anything")
+    print("  → Checking inputs, outputs, and side-effects before changing anything...")
+    print("  (Technical) analyzing extracted block dependencies (nothing changed yet)")
     print("=" * 60)
     if plan.returned:
         print("  The extracted function will return:"
@@ -351,6 +419,17 @@ def do_extract(repo_root: str, rel_file: str, start: int, end: int,
     else:
         print("  The block has no outward effect on the enclosing function.")
     print("  Only one file is edited; the test suite will confirm behavior.")
+
+    if dry_run:
+        print()
+        print(_yellow("=" * 60))
+        print(_yellow("DRY-RUN SUMMARY — no changes were made to disk"))
+        print(_yellow(f"What you asked to do: Extract lines {start}-{end} of {rel_file} into function '{name}'"))
+        print(_yellow(f"Files that would be changed: {rel_file}"))
+        print(_yellow("Risky files flagged/skipped: (none)"))
+        print(_yellow("Final outcome: DRY-RUN COMPLETED (Snapshot, Act, and Verify steps skipped)"))
+        print(_yellow("=" * 60))
+        return 0
 
     # ── 3. SNAPSHOT ───────────────────────────────────────────────────────
     snapshot = _snapshot_step(repo_root)
@@ -366,17 +445,19 @@ def do_extract(repo_root: str, rel_file: str, start: int, end: int,
         rel, _plan = extract_into_file(repo_root, rel_file, start, end, name)
         print(f"    {rel}: extracted lines {start}-{end} → def {name}(…)")
     except Exception as e:
-        print(f"  ERROR during extraction: {e}")
+        print(_red(f"  ERROR during extraction: {e}"))
         restore_snapshot(snapshot, repo_root)
         cleanup_snapshot(snapshot)
         return 1
 
     # ── 5. VERIFY ─────────────────────────────────────────────────────────
-    return _verify_step(repo_root, test_cmd, snapshot, name, [])
+    action_desc = f"Extract lines {start}-{end} of {rel_file} into function '{name}'"
+    return _verify_step(repo_root, test_cmd, snapshot, name, [],
+                        action_desc=action_desc, changed_files=[rel_file])
 
 
 def do_move(repo_root: str, symbol: str, source: str, target: str,
-            test_cmd: str) -> int:
+            test_cmd: str, dry_run: bool = False) -> int:
     repo_root = os.path.abspath(repo_root)
 
     # ── 1. MAP ────────────────────────────────────────────────────────────
@@ -386,7 +467,7 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
     print(f"  (Technical) scanning for references to '{symbol}'")
     print("=" * 60)
     if not os.path.isdir(repo_root):
-        print(f"ERROR: repo root does not exist: {repo_root}")
+        print(_red(f"ERROR: repo root does not exist: {repo_root}"))
         return 2
 
     result = scan_repo(repo_root, symbol)
@@ -406,13 +487,13 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
     _print_blast_radius(repo_root, symbol)
 
     if not os.path.isfile(os.path.join(repo_root, source)):
-        print(f"ERROR: source file not found: {source}")
+        print(_red(f"ERROR: source file not found: {source}"))
         return 2
     with open(os.path.join(repo_root, source), "r", encoding="utf-8") as f:
         src_text = f.read()
     from .move_symbol import find_top_level_definition
     if find_top_level_definition(src_text, symbol) is None:
-        print(f"ERROR: no top-level definition named '{symbol}' in {source}")
+        print(_red(f"ERROR: no top-level definition named '{symbol}' in {source}"))
         return 2
 
     print(f"\n  Move plan: '{symbol}' from {source} → {target}")
@@ -426,17 +507,34 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
     print("  (Technical) dynamic-risk check (nothing changed yet)")
     print("=" * 60)
     if result.has_dynamic_risk:
-        print(f"  ⚠ WARNING: '{symbol}' appears inside string literals in:")
+        print(_yellow(f"  ⚠ WARNING: '{symbol}' appears inside string literals in:"))
         for f in result.dynamic_risk_files:
-            print(f"    - {f}")
+            print(_yellow(f"    - {f}"))
         if language_of_files(result.dynamic_risk_files) == {"javascript"}:
-            print("  Those dynamic references (e.g. obj['name']) cannot be "
-                  "rewritten automatically.")
+            print(_yellow("  Those dynamic references (e.g. obj['name']) cannot be "
+                          "rewritten automatically."))
         else:
-            print("  Those dynamic references (e.g. getattr(obj, 'name')) "
-                  "cannot be rewritten automatically.")
+            print(_yellow("  Those dynamic references (e.g. getattr(obj, 'name')) "
+                          "cannot be rewritten automatically."))
     else:
-        print("  No dynamic-risk references detected — safe to proceed.")
+        print(_green("  No dynamic-risk references detected — safe to proceed."))
+
+    if dry_run:
+        print()
+        print(_yellow("=" * 60))
+        print(_yellow("DRY-RUN SUMMARY — no changes were made to disk"))
+        print(_yellow(f"What you asked to do: Move symbol '{symbol}' from {source} → {target}"))
+        if result.static_files:
+            print(_yellow(f"Files that would be changed: {', '.join(result.static_files)}"))
+        else:
+            print(_yellow(f"Files that would be changed: {source}, {target}"))
+        if result.dynamic_risk_files:
+            print(_yellow(f"Risky files flagged/skipped: {', '.join(result.dynamic_risk_files)}"))
+        else:
+            print(_yellow("Risky files flagged/skipped: (none)"))
+        print(_yellow("Final outcome: DRY-RUN COMPLETED (Snapshot, Act, and Verify steps skipped)"))
+        print(_yellow("=" * 60))
+        return 0
 
     # ── 3. SNAPSHOT ───────────────────────────────────────────────────────
     snapshot = _snapshot_step(repo_root)
@@ -453,31 +551,37 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
         for rel, desc in changes.items():
             print(f"    {rel}: {desc}")
     except Exception as e:
-        print(f"  ERROR during move: {e}")
+        print(_red(f"  ERROR during move: {e}"))
         restore_snapshot(snapshot, repo_root)
         cleanup_snapshot(snapshot)
         return 1
 
     # ── 5. VERIFY ─────────────────────────────────────────────────────────
+    action_desc = f"Move symbol '{symbol}' from {source} → {target}"
     return _verify_step(repo_root, test_cmd, snapshot, symbol,
-                        result.dynamic_risk_files)
+                        result.dynamic_risk_files, action_desc=action_desc,
+                        changed_files=list(changes.keys()))
 
 
-def main():
+def main(argv=None):
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.command == "rename":
-        code = do_rename(args.repo_root, args.symbol, args.to, args.test_cmd)
-        sys.exit(code)
+        code = do_rename(args.repo_root, args.symbol, args.to, args.test_cmd,
+                         dry_run=args.dry_run)
+        return code
     elif args.command == "extract-function":
         code = do_extract(args.repo_root, args.file, args.start_line,
-                          args.end_line, args.name, args.test_cmd)
-        sys.exit(code)
+                          args.end_line, args.name, args.test_cmd,
+                          dry_run=args.dry_run)
+        return code
     elif args.command == "move-symbol":
         code = do_move(args.repo_root, args.symbol, args.source,
-                       args.target, args.test_cmd)
-        sys.exit(code)
+                       args.target, args.test_cmd,
+                       dry_run=args.dry_run)
+        return code
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

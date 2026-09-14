@@ -752,3 +752,61 @@ class TestSelfHeal:
         out = capsys.readouterr().out
         assert "Rolling back" in out
         assert "DIAGNOSIS" in out
+
+
+class TestDryRun:
+    def test_rename_dry_run_leaves_files_unchanged(self, tmp_path, capsys):
+        repo = _sample_repo_copy(tmp_path)
+        mathutils = repo / "pkg" / "mathutils.py"
+        original_content = mathutils.read_text(encoding="utf-8")
+
+        import src.main as main
+        code = main.do_rename(str(repo), "build_report", "generate_report",
+                              "pytest -q", dry_run=True)
+        assert code == 0
+        assert mathutils.read_text(encoding="utf-8") == original_content
+        out = capsys.readouterr().out
+        assert "DRY-RUN SUMMARY" in out
+        assert "DRY-RUN COMPLETED" in out
+        assert "build_report" in out
+
+    def test_extract_dry_run_leaves_files_unchanged(self, tmp_path, capsys):
+        repo = _sample_repo_copy(tmp_path)
+        mathutils = repo / "pkg" / "mathutils.py"
+        original_content = mathutils.read_text(encoding="utf-8")
+
+        import src.main as main
+        code = main.do_extract(str(repo), "pkg/mathutils.py", 30, 31,
+                               "_helper", "pytest -q", dry_run=True)
+        assert code == 0
+        assert mathutils.read_text(encoding="utf-8") == original_content
+        out = capsys.readouterr().out
+        assert "DRY-RUN SUMMARY" in out
+        assert "DRY-RUN COMPLETED" in out
+
+    def test_move_dry_run_leaves_files_unchanged(self, tmp_path, capsys):
+        repo = _sample_repo_copy(tmp_path)
+        target = repo / "pkg" / "reportbuilder.py"
+        assert not target.exists()
+
+        import src.main as main
+        code = main.do_move(str(repo), "build_report", "pkg/mathutils.py",
+                            "pkg/reportbuilder.py", "pytest -q", dry_run=True)
+        assert code == 0
+        assert not target.exists()
+        out = capsys.readouterr().out
+        assert "DRY-RUN SUMMARY" in out
+        assert "DRY-RUN COMPLETED" in out
+
+    def test_cli_dry_run_flag(self, tmp_path, capsys):
+        repo = _sample_repo_copy(tmp_path)
+        import src.main as main
+        code = main.main([
+            "rename", "--repo-root", str(repo),
+            "--symbol", "build_report", "--to", "generate_report",
+            "--test-cmd", "pytest -q", "--dry-run"
+        ])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "DRY-RUN SUMMARY" in out
+

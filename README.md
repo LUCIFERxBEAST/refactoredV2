@@ -70,6 +70,7 @@ python -m src.main rename \
   --to new_function_name \
   --test-cmd "pytest -q"                        # Python
   # --test-cmd "node --test tests/*.test.js"    # JavaScript
+  # --dry-run                                  # Optional: simulate without changes
 ```
 
 ### Extract a block into a new function (Python)
@@ -80,7 +81,8 @@ python -m src.main extract-function \
   --file pkg/mathutils.py \
   --start-line 30 --end-line 31 \
   --name _build_summary_and_count \
-  --test-cmd "pytest -q"
+  --test-cmd "pytest -q" \
+  # --dry-run                                  # Optional: simulate without changes
 ```
 
 The tool derives the new function automatically:
@@ -110,13 +112,22 @@ python -m src.main move-symbol \
   --symbol build_report \
   --source pkg/mathutils.py \
   --target pkg/reportbuilder.py \
-  --test-cmd "pytest -q"
+  --test-cmd "pytest -q" \
+  # --dry-run                                  # Optional: simulate without changes
 ```
 
 This removes the definition from the source, creates/extends the target file
 with an import of whatever module-level names the moved code depended on, and
 rewrites every static reference (`from pkg.mathutils import build_report` →
 new module; `mathutils.build_report(...)` → bare `build_report(...)` + import).
+
+### Dry-Run Simulation (`--dry-run`)
+
+Add `--dry-run` to any subcommand (`rename`, `extract-function`, `move-symbol`) to:
+- Run **STEP 1: MAP** (static references, blast radius, AST parameter flow)
+- Run **STEP 2: WARN** (flag dynamic string risks and side effects)
+- Skip **SNAPSHOT**, **ACT**, and **VERIFY** (no files edited, no tests run)
+- Print a clear dry-run summary of all changes that would have been applied.
 
 ---
 
@@ -194,6 +205,49 @@ Coverage includes multi-language scanning (Python/JS/TS), rename,
 extract-function, move-symbol, snapshot rollback, and failure diagnosis for
 both pytest output (`NameError` / `AttributeError` / `ImportError`) and Node
 output (`TypeError` / `ReferenceError`).
+
+---
+
+## MCP server (agentic IDE integration)
+
+Refactor Guard exposes its safe refactoring pipeline as **Model Context Protocol (MCP) tools** for AI coding assistants (Claude Desktop, Cursor, Cline, etc.).
+
+### How to run
+
+1. Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+2. Start the MCP server (over stdio):
+
+```bash
+python -m src.mcp_server
+```
+
+### MCP IDE registration
+
+For Claude Desktop, Cursor, or Cline, add the server to your MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "refactor-guard": {
+      "command": "python",
+      "args": ["-m", "src.mcp_server"],
+      "env": {}
+    }
+  }
+}
+```
+
+Once registered, the AI assistant has access to the following tools:
+
+- `refactor_guard_rename(repo_root, symbol, to, test_cmd, dry_run=False)` — Safely rename a symbol across the project with blast radius analysis, dynamic warning checks, automated test verification, and snapshot rollback.
+- `refactor_guard_extract_function(repo_root, rel_file, start_line, end_line, name, test_cmd, dry_run=False)` — Extract a Python code block into a new function with automatic parameter and return inference.
+- `refactor_guard_move_symbol(repo_root, symbol, source, target, test_cmd, dry_run=False)` — Move a top-level symbol to another module with automatic import rewriting across all project files.
+- `refactor_rename`, `refactor_extract_function`, `refactor_move_symbol` (backward-compatible aliases).
 
 ---
 
