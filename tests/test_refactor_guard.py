@@ -9,7 +9,7 @@ import subprocess
 import sys
 import pytest
 
-from src.dependency_graph import scan_repo, scan_source
+from src.dependency_graph import blast_radius, scan_repo, scan_source
 from src.refactor_ops import rename_symbol_in_file, rename_in_files
 from src.snapshot import create_snapshot, restore_snapshot, cleanup_snapshot
 from src.test_runner import find_missing_symbols, diagnose_failures, build_command
@@ -532,3 +532,162 @@ class TestJsMissingSymbols:
             "PASSED: all good", "computeTotal", []
         )
         assert "No error mentioning" in result
+
+class TestBlastRadius:
+    """Blast radius: transitive call-graph traversal (networkx)."""
+
+    def test_python_chain_abc(self, tmp_path):
+        """A.py imports from B.py which imports from C.py.
+        blast_radius('get_value') defined in C must include both B and A.
+        """
+        (tmp_path / "c.py").write_text(
+            "def get_value():\n"
+            "    return 42\n"
+        )
+        (tmp_path / "b.py").write_text(
+            "from c import get_value\n"
+            "def middle():\n"
+            "    return get_value() + 1\n"
+        )
+        (tmp_path / "a.py").write_text(
+            "from b import middle\n"
+            "def top():\n"
+            "    return middle() * 2\n"
+        )
+        radius = blast_radius(str(tmp_path), "get_value")
+        assert "c.py" in radius   # defining file
+        assert "b.py" in radius   # direct caller
+        assert "a.py" in radius   # transitive caller
+
+    def test_python_chain_excludes_unrelated_file(self, tmp_path):
+        """An unrelated file D.py that doesn't participate in the chain
+        must not appear in the blast radius.
+        """
+        (tmp_path / "c.py").write_text(
+            "def get_value():\n    return 42\n"
+        )
+        (tmp_path / "b.py").write_text(
+            "from c import get_value\ndef middle():\n    return get_value()\n"
+        )
+        (tmp_path / "d.py").write_text(
+            "import os\ndef unrelated():\n    return os.getcwd()\n"
+        )
+        radius = blast_radius(str(tmp_path), "get_value")
+        assert "d.py" not in radius
+        assert "c.py" in radius
+        assert "b.py" in radius
+
+    def test_js_chain_require(self, tmp_path):
+        """JS require-based chain: a.js -> b.js -> c.js.
+        blast_radius('getValue') defined in c.js must include b.js and a.js.
+        """
+        (tmp_path / "c.js").write_text(
+            "function getValue() { return 42; }\n"
+            "module.exports = { getValue };\n"
+        )
+        (tmp_path / "b.js").write_text(
+            "const { getValue } = require('./c');\n"
+            "function middle() { return getValue() + 1; }\n"
+            "module.exports = { middle };\n"
+        )
+        (tmp_path / "a.js").write_text(
+            "const { middle } = require('./b');\n"
+            "function top() { return middle() * 2; }\n"
+            "module.exports = { top };\n"
+        )
+        radius = blast_radius(str(tmp_path), "getValue")
+        assert "c.js" in radius   # defining file
+        assert "b.js" in radius   # direct caller
+        assert "a.js" in radius   # transitive caller
+
+    def test_blast_radius_missing_symbol(self, tmp_path):
+        """blast_radius for a symbol not defined anywhere returns []."""
+        (tmp_path / "a.py").write_text("x = 1\n")
+        assert blast_radius(str(tmp_path), "nonexistent") == []
+class TestSelfHeal:
+    """Bounded LLM retry — API-key skip and retry logic (no real API calls)."""
+
+    def test_skips_diagnosis_without_api_key(self, monkeypatch):
+        """No ANTHROPIC_API_KEY -> has_api_key() is False, get_diagnosis()
+        returns None, and the Anthropic API is never touched."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        import src.self_heal as sh
+
+        def _explode(*args, **kwargs):
+            raise AssertionError("Anthropic API must not be called")
+
+        monkeypatch.setattr(sh, "request_ai_diagnosis", _explode)
+        assert sh.has_api_key() is False
+        assert sh.get_diagnosis("compute_total", "tests failed", []) is None
+
+    def test_verify_step_rolls_back_without_api_key(self, tmp_path, monkeypatch,
+                                                   capsys):
+        """No key -> _verify_step prints the skip line and rolls back
+        (exit code 1) without attempting a retry."""
+        repo = _sample_repo_copy(tmp_path)
+        snapshot = create_snapshot(str(repo))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        import src.main as main
+        state = {"calls": 0}
+
+        def _fail(*a, **k):
+            state["calls"] += 1
+            return (False, "FAILED boom", 1)
+
+        monkeypatch.setattr(main, "run_tests", _fail)
+        code = main._verify_step(str(repo), "pytest -q", snapshot,
+                                 "compute_total", [])
+        assert code == 1
+        assert state["calls"] == 1                  # initial run only, no retry
+        assert not os.path.exists(snapshot)         # backup cleaned up
+        out = capsys.readouterr().out
+        assert "Skipping AI diagnosis — no API key configured" in out
+
+    def test_verify_step_keeps_change_on_retry(self, tmp_path, monkeypatch,
+                                               capsys):
+        """Diagnosis runs, the suite is re-run exactly once more, and a
+        passing retry keeps the change."""
+        repo = _sample_repo_copy(tmp_path)
+        snapshot = create_snapshot(str(repo))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-123")
+        import src.main as main
+        state = {"calls": 0}
+
+        def _run(*args, **kwargs):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                return (False, "FAILED first", 1)
+            return (True, "PASSED retry", 0)
+
+        monkeypatch.setattr(main, "run_tests", _run)
+        monkeypatch.setattr(main, "get_diagnosis",
+                            lambda *a, **k: "  🔍 Root cause: transient\n"
+                                            "  💡 Suggested fix: retry")
+        code = main._verify_step(str(repo), "pytest -q", snapshot,
+                                 "compute_total", [])
+        assert code == 0
+        assert state["calls"] == 2                  # initial + exactly one retry
+        assert not os.path.exists(snapshot)         # change kept, backup cleaned
+        out = capsys.readouterr().out
+        assert "AI diagnosis helped resolve a transient issue" in out
+        assert "Rolling back" not in out
+
+    def test_verify_step_rolls_back_when_retry_fails(self, tmp_path, monkeypatch,
+                                                     capsys):
+        """Diagnosis runs, retry fails too -> roll back as before."""
+        repo = _sample_repo_copy(tmp_path)
+        snapshot = create_snapshot(str(repo))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-123")
+        import src.main as main
+        monkeypatch.setattr(main, "run_tests",
+                            lambda *a, **k: (False, "FAILED again", 1))
+        monkeypatch.setattr(main, "get_diagnosis",
+                            lambda *a, **k: "  🔍 Root cause: broken\n"
+                                            "  💡 Suggested fix: fix it")
+        code = main._verify_step(str(repo), "pytest -q", snapshot,
+                                 "compute_total", [])
+        assert code == 1
+        assert not os.path.exists(snapshot)
+        out = capsys.readouterr().out
+        assert "Rolling back" in out
+        assert "DIAGNOSIS" in out

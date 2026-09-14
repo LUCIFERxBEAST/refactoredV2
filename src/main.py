@@ -18,12 +18,23 @@ import argparse
 import os
 import sys
 
-from .dependency_graph import scan_repo
+from .dependency_graph import blast_radius, scan_repo
 from .extract_function import analyze_block, extract_into_file
 from .move_symbol import move_symbol as apply_move_symbol
 from .refactor_ops import rename_in_files
+from .self_heal import get_diagnosis, has_api_key
 from .snapshot import create_snapshot, restore_snapshot, cleanup_snapshot
 from .test_runner import run_tests, diagnose_failures, language_of_files
+
+# Windows consoles default to code pages (cp1252/cp437) that cannot represent
+# the ✓/⚠/→/🔍/💡 glyphs used below.  Reconfigure so human-readable output
+# never crashes the CLI (e.g. with UnicodeEncodeError).
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 
 def build_parser():
@@ -116,6 +127,33 @@ def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
 
     print()
     print("=" * 60)
+    print("  === Self-Heal: AI Diagnosis ===")
+    print("=" * 60)
+    if has_api_key():
+        diagnosis = get_diagnosis(symbol, output, dynamic_files)
+        if diagnosis:
+            print(diagnosis)
+        print()
+        print("  Retrying test suite exactly once…")
+        passed2, output2, code2 = run_tests(repo_root, test_cmd)
+        if output2.strip():
+            for line in output2.strip().splitlines():
+                print(f"  {line}")
+        print(f"  Exit code: {code2}")
+        if passed2:
+            print()
+            print("=" * 60)
+            print("  SUCCESS ✓ — AI diagnosis helped resolve a transient "
+                  "issue. Change is kept.")
+            print("=" * 60)
+            cleanup_snapshot(snapshot)
+            print(f"  Backup deleted: {snapshot}")
+            return 0
+    else:
+        print("  Skipping AI diagnosis — no API key configured")
+
+    print()
+    print("=" * 60)
     print("  FAILURE ✗ — tests failed after the change. Rolling back…")
     print("=" * 60)
     restore_snapshot(snapshot, repo_root)
@@ -138,6 +176,22 @@ def _snapshot_step(repo_root: str) -> str:
     snapshot = create_snapshot(repo_root)
     print(f"  Backup created at: {snapshot}")
     return snapshot
+
+
+def _print_blast_radius(repo_root: str, symbol: str) -> None:
+    """STEP 1 informational output: files transitively affected (call graph)."""
+    try:
+        files = blast_radius(repo_root, symbol)
+    except Exception as e:  # never let informational output break a run
+        print(f"  Blast radius: (could not compute — {e})")
+        return
+    print("  Blast radius — files transitively affected:")
+    if files:
+        print(f"    {len(files)} file(s) transitively affected")
+        for f in files:
+            print(f"    - {f}")
+    else:
+        print("    (none)")
 
 
 def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str) -> int:
@@ -167,6 +221,8 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str) -> int:
             print(f"    - {f}")
     else:
         print("    (none)")
+
+    _print_blast_radius(repo_root, symbol)
 
     if not result.static_files:
         print(f"\n  WARNING: no static references to '{symbol}' found; nothing to do.")
@@ -315,6 +371,8 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
             print(f"    - {f}")
     else:
         print("    (none)")
+
+    _print_blast_radius(repo_root, symbol)
 
     if not os.path.isfile(os.path.join(repo_root, source)):
         print(f"ERROR: source file not found: {source}")

@@ -6,6 +6,14 @@ import shutil
 import subprocess
 import sys
 
+# Console-safe output: Windows code pages can't represent →/⚠/✓/🔍/💡 glyphs.
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PY = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
 if not os.path.isfile(PY):
@@ -27,8 +35,11 @@ def run_label(label, argv, expect=0):
     print("\n" + "=" * 70)
     print(f"DEMO: {label}")
     print("=" * 70)
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     proc = subprocess.run([PY, "-m", "src.main"] + argv, capture_output=True,
-                          text=True, cwd=ROOT, encoding="utf-8", errors="replace")
+                          text=True, cwd=ROOT, encoding="utf-8", errors="replace",
+                          env=env)
     out = proc.stdout + proc.stderr
     print(out)
     ok = proc.returncode == expect
