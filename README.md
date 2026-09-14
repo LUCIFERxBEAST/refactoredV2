@@ -5,8 +5,9 @@
 A refactoring safety harness that detects stale references across a codebase
 before, during, and after a change — with automatic rollback when verification
 fails. Supports **three operations** (`rename`, `extract-function`,
-`move-symbol`) across **three syntaxes** (Python, JavaScript, TypeScript),
-all parsed with **Tree-sitter**.
+`move-symbol`) with Tree-sitter parsing: `rename` works across Python, JavaScript,
+and TypeScript, while `extract-function` and `move-symbol` target Python with
+strict fail-fast validation on unsupported extensions.
 
 ---
 
@@ -18,14 +19,24 @@ all parsed with **Tree-sitter**.
 |      |           | imports, definitions, member access) and _dynamic-risk_ (name in a string).  |
 | 2    | **WARN**  | Prints dynamic-risk files **before anything changes** so you know what can't |
 |      |           | be auto-rewritten.                                                           |
-| 3    | **SNAPSHOT** | Copies the entire repo to a temporary backup folder.                      |
-| 4    | **ACT**   | Applies the operation (word-boundary rename / block extraction / symbol     |
-|      |           | move with import rewriting).                                                 |
+| 3    | **SNAPSHOT** | Scalable backup: zero-copy Git snapshot via throwaway refs (`refs/refactor-guard/*`) or directory copy excluding large/irrelevant directories. |
+| 4    | **ACT**   | Applies the operation (Tree-sitter AST byte-range span rename preserving    |
+|      |           | comments/docstrings / block extraction / symbol move with import rewrites).  |
 | 5    | **VERIFY** | Runs the target repo's test suite. If tests pass → keep. If they fail →   |
 |      |           | **auto-rollback** from the snapshot and print a diagnosis pointing at the    |
 |      |           | dynamic-risk file.                                                           |
 
-### Supported languages
+### Supported languages & Operations
+
+Refactor Guard enforces language support per operation. While symbol renaming operates across multi-language codebases using Tree-sitter, AST-heavy transformations (`extract-function` and `move-symbol`) currently target Python. Unsupported file extensions fail fast with exit code 2.
+
+| Operation | Python (`.py`) | JavaScript (`.js`) | TypeScript (`.ts`) | Details |
+|---|:---:|:---:|:---:|---|
+| **`rename`** | ✅ Supported | ✅ Supported | ✅ Supported | Multi-language AST byte-range span replacement and bracket-access detection via Tree-sitter |
+| **`extract-function`** | ✅ Supported | ❌ Not supported | ❌ Not supported | Requires Python AST variable flow analysis; unsupported extensions exit with code 2 |
+| **`move-symbol`** | ✅ Supported | ❌ Not supported | ❌ Not supported | Requires Python AST module analysis and import rewrites; unsupported extensions exit with code 2 |
+
+#### Grammar & ACT details for `rename`:
 
 | Extension | Grammar                | Static node types                                        | Dynamic-risk |
 |-----------|------------------------|----------------------------------------------------------|--------------|
@@ -33,10 +44,29 @@ all parsed with **Tree-sitter**.
 | `.js`     | tree-sitter-javascript | `identifier`, `property_identifier`, `shorthand_property_identifier` | `string_fragment` |
 | `.ts`     | tree-sitter-javascript | same as `.js`                                            | `string_fragment` |
 
+- **AST Byte-Range Span Replacement**: Files are parsed via Tree-sitter, read and rewritten in binary mode (`open(..., 'rb')`/`'wb'`), replacing only verified AST static identifier byte offsets. Comments, docstrings, string literals, and surrounding UTF-8/emojis are preserved byte-for-byte without offset drift.
+- **Span Validation & Parse Error Fallback**: Target spans are asserted against `old_symbol` bytes before replacement (triggering a fresh re-scan on mismatch). If Tree-sitter encounters a syntax error (`tree.root_node.has_error`), it logs a warning and falls back to word-boundary regex for that file only.
+
 For example, `getattr(mathutils, "compute_total")` (Python) and
 `mathutils["computeTotal"](items)` (JavaScript) are both flagged as
 dynamic-risk: the name is embedded in a string literal and a plain
 find-and-replace could never update it.
+
+### Snapshot & Rollback Architecture
+
+Refactor Guard provides a scalable dual-strategy backup system in `src/snapshot.py` with near-instant rollback and zero disk bloat:
+
+1. **Git Repositories (Fast Zero-Copy Snapshot)**:
+   - **Isolated Index**: All git index staging and tree writing operations strictly use a separate temporary index file via the `GIT_INDEX_FILE` environment variable. The developer's real `.git/index` is never read from, written to, or altered.
+   - **Seeded Index (Subdirectory Isolation)**: When `repo_root` is a subdirectory within a git repository, the temporary index is pre-populated via `git read-tree HEAD` before staging `repo_root` (`git add -A -- .`). This ensures files outside `repo_root` are preserved in the commit tree.
+   - **Pathspec-Scoped Restore**: Rollback is strictly restricted to `repo_root` via `git checkout-index -f -z --stdin`, and newly created untracked files are cleaned up without touching or modifying any files outside `repo_root`.
+   - **Zero-Commit Repositories**: Freshly `git init`'d repositories with no commits yet are detected via `git rev-parse --verify HEAD`; the parent flag (`-p HEAD`) and `read-tree` are omitted gracefully.
+   - **Gitignored Source File Fallback**: If `repo_root` contains gitignored `.py`, `.js`, or `.ts` source files that git would not track, Refactor Guard automatically falls back to a directory copy snapshot so uncommitted/ignored code is never lost.
+   - **Crash Recovery & Stale Ref Cleanup**: Orphaned `refs/refactor-guard/*` refs left by interrupted runs are cleaned up automatically at startup via `clean_stale_snapshots()` and on process exit via `atexit`.
+
+2. **Non-Git Repositories (Directory Copy Fallback)**:
+   - Uses `shutil.copytree` to back up files into a temporary directory.
+   - Automatically excludes large, non-source directories (`node_modules`, `.git`, `venv`, `.venv`, `env`, `__pycache__`, `.pytest_cache`, `.mypy_cache`) to minimize snapshot overhead and disk usage.
 
 ---
 
@@ -56,6 +86,23 @@ pip install -r requirements.txt
 # Node.js is only needed for the JavaScript sample/demo
 node --version             # >= 20 recommended
 ```
+
+### Environment Variables (Optional Self-Heal AI)
+
+Refactor Guard can optionally provide AI-driven root-cause diagnoses for test failures using Google Gemini before executing an auto-rollback:
+
+```bash
+# Optional: API key for Gemini AI failure diagnosis
+export GEMINI_API_KEY="your-gemini-api-key"
+
+# Optional: Gemini model override (defaults to gemini-3.6-flash if unset)
+export GEMINI_MODEL="gemini-3.6-flash"
+```
+
+These can also be placed in a `.env` file in the project root:
+- **Graceful Fallback**: If `GEMINI_API_KEY` is missing, or if the configured `GEMINI_MODEL` is unavailable or deprecated (e.g. 404/not found), Refactor Guard logs a clear warning, skips AI diagnosis and retry, and proceeds immediately to a safe rollback without crashing or raising.
+- **Anti-Hardcode Guard**: System instructions direct the model to propose general fixes rather than narrow workarounds. Responses are scanned for hardcoding patterns (e.g. `just return`, `hardcode`, `special case`), displaying a warning (`⚠ This suggested fix may be overly specific...`) when detected.
+- **Bounded Retry**: If a diagnosis is generated, Refactor Guard re-runs the project test suite exactly once. If tests pass, the change is kept; if tests still fail, the repository is automatically rolled back.
 
 ---
 
@@ -258,10 +305,10 @@ refactor-guard/
 ├── src/
 │   ├── __init__.py
 │   ├── dependency_graph.py   # MAP — Tree-sitter multi-language scanning
-│   ├── refactor_ops.py       # ACT — word-boundary-safe rename
+│   ├── refactor_ops.py       # ACT — Tree-sitter AST byte-range span rename (regex fallback)
 │   ├── extract_function.py   # ACT — extract lines into a new function
 │   ├── move_symbol.py        # ACT — move a definition + rewrite references
-│   ├── snapshot.py           # SNAPSHOT / ROLLBACK via shutil + tempfile
+│   ├── snapshot.py           # SNAPSHOT / ROLLBACK via Git throwaway ref or copytree fallback
 │   ├── test_runner.py        # VERIFY — subprocess + failure-parsing diagnosis
 │   └── main.py               # CLI entrypoint (3 commands, 5-step pipeline)
 ├── tests/

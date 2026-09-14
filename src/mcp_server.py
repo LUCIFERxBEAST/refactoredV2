@@ -100,6 +100,9 @@ def refactor_guard_extract_function(
         test_cmd: Test suite command to verify (e.g. 'pytest -q').
         dry_run: If True, analyzes and plans extraction without modifying files or running tests.
     """
+    err = cli_main.check_supported_extension("extract-function", rel_file)
+    if err:
+        return f"[FAILURE (exit code 2)]\n\n{err}\n"
     return _run_with_captured_output(
         cli_main.do_extract,
         repo_root=str(repo_root),
@@ -132,6 +135,10 @@ def refactor_guard_move_symbol(
         test_cmd: Test suite command to verify (e.g. 'pytest -q').
         dry_run: If True, scans dependencies and simulates move without editing files or running tests.
     """
+    for f in (source, target):
+        err = cli_main.check_supported_extension("move-symbol", f)
+        if err:
+            return f"[FAILURE (exit code 2)]\n\n{err}\n"
     return _run_with_captured_output(
         cli_main.do_move,
         repo_root=str(repo_root),
@@ -140,6 +147,29 @@ def refactor_guard_move_symbol(
         target=str(target),
         test_cmd=str(test_cmd),
         dry_run=bool(dry_run),
+    )
+
+
+@mcp.tool()
+def refactor_guard_history(
+    repo_root: str,
+    symbol: str = "",
+    limit: int = 0,
+) -> str:
+    """Show prior refactor history and rollback records for a repository.
+
+    Args:
+        repo_root: Path to the target repository.
+        symbol: Optional symbol name to filter history for.
+        limit: Optional maximum number of recent records to return (0 = all).
+    """
+    sym_arg = symbol if symbol else None
+    lim_arg = limit if limit > 0 else None
+    return _run_with_captured_output(
+        cli_main.do_history,
+        repo_root=str(repo_root),
+        symbol=sym_arg,
+        limit=lim_arg,
     )
 
 
@@ -190,6 +220,16 @@ def refactor_move_symbol(
     )
 
 
+@mcp.tool()
+def refactor_history(
+    repo_root: str,
+    symbol: str = "",
+    limit: int = 0,
+) -> str:
+    """Alias for refactor_guard_history."""
+    return refactor_guard_history(repo_root, symbol=symbol, limit=limit)
+
+
 def main() -> None:
     """Run the MCP server over stdio."""
     mcp.run()
@@ -197,4 +237,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

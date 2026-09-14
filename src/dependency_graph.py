@@ -95,6 +95,8 @@ class FileReferences:
     dynamic_risk: bool = False
     static_lines: List[int] = field(default_factory=list)
     dynamic_lines: List[int] = field(default_factory=list)
+    static_spans: List[Tuple[int, int]] = field(default_factory=list)
+    has_parse_error: bool = False
 
 
 @dataclass
@@ -116,18 +118,25 @@ class ScanResult:
         return len(self.dynamic_risk_files) > 0
 
 
-def scan_source(source: str, symbol: str, extension: str) -> FileReferences:
+def scan_source(source: str | bytes, symbol: str, extension: str) -> FileReferences:
     """
-    Scan a single source file's raw text for references to `symbol`.
+    Scan a single source file's raw text or bytes for references to `symbol`.
     `extension` selects the grammar (e.g. ".py" or ".js").
     """
+    source_bytes = source.encode("utf-8") if isinstance(source, str) else source
     static_types, dynamic_types = _node_types_for(extension)
     parser = _get_parser(extension)
-    tree = parser.parse(source.encode("utf-8"))
+    try:
+        tree = parser.parse(source_bytes)
+        has_error = tree.root_node.has_error
+    except Exception:
+        return FileReferences(has_parse_error=True)
+
     symbol_bytes = symbol.encode("utf-8")
 
     static_lines: Set[int] = set()
     dynamic_lines: Set[int] = set()
+    static_spans: List[Tuple[int, int]] = []
 
     for node in _walk(tree.root_node):
         if not node.is_named:
@@ -141,15 +150,26 @@ def scan_source(source: str, symbol: str, extension: str) -> FileReferences:
         lineno = node.start_point.row + 1
         if ntype in static_types:
             static_lines.add(lineno)
+            static_spans.append((node.start_byte, node.end_byte))
         else:
             dynamic_lines.add(lineno)
+
+    sorted_spans = sorted(list(set(static_spans)), key=lambda s: (s[0], s[1]))
 
     return FileReferences(
         static=len(static_lines) > 0,
         dynamic_risk=len(dynamic_lines) > 0,
         static_lines=sorted(static_lines),
         dynamic_lines=sorted(dynamic_lines),
+        static_spans=sorted_spans,
+        has_parse_error=has_error,
     )
+
+
+def get_static_spans(source: str | bytes, symbol: str, extension: str) -> List[Tuple[int, int]]:
+    """Return byte-range spans (start_byte, end_byte) for static identifier nodes."""
+    ref = scan_source(source, symbol, extension)
+    return ref.static_spans
 
 
 def _node_types_for(ext: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:

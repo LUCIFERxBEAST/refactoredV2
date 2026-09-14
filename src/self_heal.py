@@ -39,10 +39,48 @@ except ImportError:  # pragma: no cover - dotenv is an optional extra
 load_dotenv()
 
 # Free-tier model — usable without a paid plan or billing account
-# (see https://ai.google.dev/gemini-api/docs/models).  gemini-2.0-flash was
-# retired by Google (404 on the live API); gemini-3.6-flash is the current
-# replacement advertised by the API error message.
-_MODEL = "gemini-3.6-flash"
+# (see https://ai.google.dev/gemini-api/docs/models). Default is gemini-3.6-flash.
+# Can be overridden by the GEMINI_MODEL environment variable.
+_DEFAULT_MODEL = "gemini-3.6-flash"
+
+
+def get_model_name() -> str:
+    """Return the configured Gemini model name from GEMINI_MODEL or default."""
+    return os.environ.get("GEMINI_MODEL", "").strip() or _DEFAULT_MODEL
+
+
+def __getattr__(name: str):
+    """Dynamic lookup for legacy/backward-compatible attributes so _MODEL cannot drift."""
+    if name == "_MODEL":
+        return get_model_name()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(list(globals().keys()) + ["_MODEL"])
+
+
+def is_model_unavailable_error(exc: Exception) -> bool:
+    """Detect whether an exception indicates the model is missing, 404, or deprecated."""
+    err_msg = str(exc).lower()
+    indicators = (
+        "404",
+        "not found",
+        "not_found",
+        "deprecated",
+        "is not supported for this api version",
+        "is not supported",
+    )
+    if any(ind in err_msg for ind in indicators):
+        return True
+    code = getattr(exc, "code", None)
+    if code in (404, "404"):
+        return True
+    status_code = getattr(exc, "status_code", None)
+    if status_code in (404, "404"):
+        return True
+    return False
+
 
 _SYSTEM_PROMPT = (
     "You are a code reliability diagnostic assistant. Given a failed "
@@ -79,16 +117,17 @@ def build_diagnosis_prompt(
 
 
 def request_ai_diagnosis(
-    symbol: str, test_output: str, dynamic_risk_files
+    symbol: str, test_output: str, dynamic_risk_files, model_name: str = None
 ) -> str:
     """Call the Google Gemini API and return the model's text response.
 
-    Uses the free-tier ``gemini-3.6-flash`` model.  Raises on any failure
-    (network error, bad key, ...); the caller wraps this and keeps the
-    pipeline non-blocking.
+    Uses the model configured via GEMINI_MODEL (default: ``gemini-3.6-flash``).
+    Raises on any failure (network error, bad key, invalid model, ...);
+    the caller wraps this and keeps the pipeline non-blocking.
     """
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    model = genai.GenerativeModel(_MODEL)
+    chosen_model = model_name or get_model_name()
+    model = genai.GenerativeModel(chosen_model)
     prompt = _SYSTEM_PROMPT + "\n\n" + build_diagnosis_prompt(
         symbol, test_output, dynamic_risk_files
     )
@@ -152,15 +191,21 @@ def format_diagnosis(raw: str) -> str:
 def get_diagnosis(symbol: str, test_output: str, dynamic_risk_files):
     """Return the formatted AI diagnosis text.
 
-    Returns ``None`` when the step should be skipped (no API key configured)
-    or ``""`` when an API request failed (the caller still performs the
-    bounded retry).  Never raises.
+    Returns ``None`` when the step should be skipped (no API key configured or
+    model is unavailable / deprecated) or ``""`` when an API request failed for
+    transient reasons (the caller still performs the bounded retry).
+    Never raises.
     """
     if not has_api_key():
         return None
+
+    model_name = get_model_name()
     try:
-        raw = request_ai_diagnosis(symbol, test_output, dynamic_risk_files)
+        raw = request_ai_diagnosis(symbol, test_output, dynamic_risk_files, model_name=model_name)
     except Exception as exc:
+        if is_model_unavailable_error(exc):
+            print(f"  ⚠ Skipping AI diagnosis — model '{model_name}' is unavailable or deprecated: {exc}")
+            return None
         print(f"  ⚠ AI diagnosis request failed: {exc}")
         return ""
     return format_diagnosis(raw)

@@ -15,6 +15,7 @@ Commands:
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -38,11 +39,101 @@ def _red(s: str) -> str:
 
 from .dependency_graph import blast_radius, scan_repo
 from .extract_function import analyze_block, extract_into_file
+from . import ledger
+from .ledger import (
+    append_record,
+    build_record,
+    find_prior_failures,
+    find_prior_successes,
+    format_timestamp_date,
+    read_records,
+)
 from .move_symbol import move_symbol as apply_move_symbol
 from .refactor_ops import rename_in_files
 from .self_heal import get_diagnosis, has_api_key
 from .snapshot import create_snapshot, restore_snapshot, cleanup_snapshot
-from .test_runner import run_tests, diagnose_failures, language_of_files
+from .test_runner import run_tests, diagnose_failures, find_missing_symbols, language_of_files
+
+
+def _safe_append_ledger(repo_root: str, record: dict) -> None:
+    """Fail-soft wrapper to append a ledger record without disrupting the refactoring run."""
+    try:
+        append_record(repo_root, record)
+    except Exception as exc:
+        print(_yellow(f"  ⚠ WARNING: Failed writing Refactor Guard ledger: {exc}"))
+
+
+def _print_prior_history_map(
+    prior_successes: list[dict],
+    prior_failures: list[dict],
+    operation: str,
+    symbol: str,
+) -> None:
+    """Surface brief prior history context during STEP 1: MAP (advisory only)."""
+    try:
+        if prior_successes:
+            last_succ = prior_successes[-1]
+            succ_date = format_timestamp_date(last_succ.get("timestamp"))
+            op_verbs = {
+                "rename": "renamed",
+                "extract-function": "extracted",
+                "move-symbol": "moved",
+            }
+            verb = op_verbs.get(operation, "modified")
+            print(_green(f"  Note: this symbol was previously {verb} successfully on {succ_date}."))
+        if prior_failures:
+            count = len(prior_failures)
+            print(_yellow(f"  Note: {count} prior attempt(s) for this refactor were rolled back (see STEP 2: WARN for details)."))
+    except Exception:
+        pass
+
+
+def _print_prior_history_warn(
+    prior_failures: list[dict],
+    current_dynamic_risk_files: list[str],
+) -> None:
+    """Print clearly formatted PRIOR HISTORY block in STEP 2: WARN if prior rolled-back attempts exist."""
+    try:
+        if not prior_failures:
+            return
+
+        count = len(prior_failures)
+        last_attempt = prior_failures[-1]
+        last_date = format_timestamp_date(last_attempt.get("timestamp"))
+        implicated = last_attempt.get("dynamic_risk_files", [])
+
+        print()
+        print(_yellow("  ── PRIOR HISTORY ───────────────────────────────────────────"))
+        print(_yellow(f"  ⚠ This exact refactor was attempted {count} time(s) before and rolled back."))
+
+        if implicated:
+            if len(implicated) == 1:
+                implicated_str = f"dynamic reference in {implicated[0]}"
+                fix_str = "Fix that file first, or this attempt will likely fail the same way."
+            else:
+                implicated_str = f"dynamic references in {', '.join(implicated)}"
+                fix_str = "Fix those files first, or this attempt will likely fail the same way."
+            print(_yellow(f"     Last attempt: {last_date} — failed due to {implicated_str}"))
+            print(_yellow(f"     {fix_str}"))
+        else:
+            failure_symbols = last_attempt.get("failure_symbols", [])
+            if failure_symbols:
+                print(_yellow(f"     Last attempt: {last_date} — failed due to missing symbol(s): {', '.join(failure_symbols)}"))
+            else:
+                print(_yellow(f"     Last attempt: {last_date} — failed during verification tests."))
+            print(_yellow("     Check previous test failures before proceeding, or this attempt will likely fail the same way."))
+
+        all_implicated = set()
+        for fail in prior_failures:
+            all_implicated.update(fail.get("dynamic_risk_files", []))
+        repeat_offenders = sorted(set(current_dynamic_risk_files).intersection(all_implicated))
+        if repeat_offenders:
+            print(_yellow(f"     Repeat offender file(s) implicated in prior rollback: {', '.join(repeat_offenders)}"))
+
+        print(_yellow("  ────────────────────────────────────────────────────────────"))
+    except Exception:
+        pass
+
 
 # Windows consoles default to code pages (cp1252/cp437) that cannot represent
 # the ✓/⚠/→/🔍/💡 glyphs used below.  Reconfigure so human-readable output
@@ -53,6 +144,35 @@ for _stream in (sys.stdout, sys.stderr):
             _stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+
+
+SUPPORTED_EXTENSIONS: dict[str, set[str]] = {
+    "rename": {".py", ".js", ".ts"},
+    "extract-function": {".py"},
+    "move-symbol": {".py"},
+}
+
+
+def check_supported_extension(operation: str, filename: str) -> str | None:
+    """Validate that `filename` has a file extension supported by `operation`.
+
+    Returns None if supported, or a descriptive error message including the
+    full operation/language support matrix if unsupported.
+    """
+    ext = os.path.splitext(filename)[1].lower()
+    allowed = SUPPORTED_EXTENSIONS.get(operation, set())
+    if ext in allowed:
+        return None
+
+    allowed_desc = ", ".join(sorted(allowed)) if allowed else "none"
+    return (
+        f"ERROR: '{operation}' does not support '{ext or '(no extension)'}' files ({filename}).\n"
+        f"Supported extensions for '{operation}': {allowed_desc}\n\n"
+        "Operation / Language support matrix:\n"
+        "  • rename:           Python (.py), JavaScript (.js), TypeScript (.ts)\n"
+        "  • extract-function: Python (.py) only\n"
+        "  • move-symbol:      Python (.py) only"
+    )
 
 
 def build_parser():
@@ -131,11 +251,23 @@ def build_parser():
         "--dry-run", action="store_true", default=False,
         help="Simulate the refactoring without modifying files on disk or running tests",
     )
+
+    history_p = sub.add_parser(
+        "history",
+        help="Show refactor history for a repository.",
+    )
+    history_p.add_argument("--repo-root", required=True, help="Path to the target repo")
+    history_p.add_argument("--symbol", default=None, help="Filter history by symbol name")
+    history_p.add_argument("--limit", type=int, default=None, help="Limit number of records shown")
+    history_p.add_argument("--json", action="store_true", default=False, help="Output history as JSON")
+
     return parser
 
 def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
                  symbol: str, dynamic_files, action_desc: str = "",
-                 changed_files: list = None) -> int:
+                 changed_files: list = None,
+                 operation: str = "rename",
+                 params: dict = None) -> int:
     """STEP 5. Returns process exit code (0 = success)."""
     print()
     print("=" * 60)
@@ -158,7 +290,7 @@ def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
         print(_green(f"  Backup deleted: {snapshot}"))
         print()
         print(_green("=" * 60))
-        print(_green("SUMMARY: SUCCESS — pipeline completed safely"))
+        print("SUMMARY: SUCCESS — pipeline completed safely")
         print(_green(f"What you asked to do: {action_desc if action_desc else f'Refactor symbol {symbol}'}"))
         if changed_files:
             print(_green(f"Files actually changed: {', '.join(changed_files)}"))
@@ -169,6 +301,19 @@ def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
         print(_green("Final outcome: SUCCESS — All tests passed!"))
         print(_green("Outcome: VERIFY passed; rollback not performed"))
         print(_green("=" * 60))
+        _safe_append_ledger(
+            repo_root,
+            build_record(
+                operation=operation,
+                symbol=symbol,
+                params=params or {},
+                outcome="success",
+                static_files=changed_files or [],
+                dynamic_risk_files=dynamic_files or [],
+                failure_symbols=[],
+                test_cmd=test_cmd,
+            ),
+        )
         return 0
 
     print()
@@ -177,37 +322,51 @@ def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
     print(_yellow("=" * 60))
     if has_api_key():
         diagnosis = get_diagnosis(symbol, output, dynamic_files)
-        if diagnosis:
-            print(_yellow(diagnosis))
-        print()
-        print(_yellow("  Retrying test suite exactly once…"))
-        passed2, output2, code2 = run_tests(repo_root, test_cmd)
-        if output2.strip():
-            for line in output2.strip().splitlines():
-                print(f"  {line}")
-        print(f"  Exit code: {code2}")
-        if passed2:
+        if diagnosis is not None:
+            if diagnosis:
+                print(_yellow(diagnosis))
             print()
-            print(_green("=" * 60))
-            print(_green("  SUCCESS ✓ — AI diagnosis helped resolve a transient "
-                        "issue. Change is kept."))
-            print(_green("=" * 60))
-            cleanup_snapshot(snapshot)
-            print(_green(f"  Backup deleted: {snapshot}"))
-            print()
-            print(_green("=" * 60))
-            print(_green("SUMMARY: SUCCESS — pipeline completed safely"))
-            print(_green(f"What you asked to do: {action_desc if action_desc else f'Refactor symbol {symbol}'}"))
-            if changed_files:
-                print(_green(f"Files actually changed: {', '.join(changed_files)}"))
-            print(_green("Changed files: see STEP 1 static-file list (edits only applied to those files)"))
-            if dynamic_files:
-                print(_green(f"Risky files skipped/flagged: {', '.join(dynamic_files)}"))
-            print(_green("Risk files: see STEP 1 dynamic-risk list (not auto-changed)"))
-            print(_green("Final outcome: SUCCESS — Tests passed on retry!"))
-            print(_green("Outcome: VERIFY passed; rollback not performed"))
-            print(_green("=" * 60))
-            return 0
+            print(_yellow("  Retrying test suite exactly once…"))
+            passed2, output2, code2 = run_tests(repo_root, test_cmd)
+            if output2.strip():
+                for line in output2.strip().splitlines():
+                    print(f"  {line}")
+            print(f"  Exit code: {code2}")
+            if passed2:
+                print()
+                print(_green("=" * 60))
+                print(_green("  SUCCESS ✓ — AI diagnosis helped resolve a transient "
+                            "issue. Change is kept."))
+                print(_green("=" * 60))
+                cleanup_snapshot(snapshot)
+                print(_green(f"  Backup deleted: {snapshot}"))
+                print()
+                print(_green("=" * 60))
+                print(_green("SUMMARY: SUCCESS — pipeline completed safely"))
+                print(_green(f"What you asked to do: {action_desc if action_desc else f'Refactor symbol {symbol}'}"))
+                if changed_files:
+                    print(_green(f"Files actually changed: {', '.join(changed_files)}"))
+                print(_green("Changed files: see STEP 1 static-file list (edits only applied to those files)"))
+                if dynamic_files:
+                    print(_green(f"Risky files skipped/flagged: {', '.join(dynamic_files)}"))
+                print(_green("Risk files: see STEP 1 dynamic-risk list (not auto-changed)"))
+                print(_green("Final outcome: SUCCESS — Tests passed on retry!"))
+                print(_green("Outcome: VERIFY passed; rollback not performed"))
+                print(_green("=" * 60))
+                _safe_append_ledger(
+                    repo_root,
+                    build_record(
+                        operation=operation,
+                        symbol=symbol,
+                        params=params or {},
+                        outcome="success",
+                        static_files=changed_files or [],
+                        dynamic_risk_files=dynamic_files or [],
+                        failure_symbols=[],
+                        test_cmd=test_cmd,
+                    ),
+                )
+                return 0
     else:
         print(_yellow("  Skipping AI diagnosis — no API key configured"))
 
@@ -237,6 +396,24 @@ def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
     print(_red("  DIAGNOSIS"))
     print(_red("=" * 60))
     print(_red(diagnose_failures(output, symbol, dynamic_files)))
+
+    last_output = output2 if (has_api_key() and 'output2' in locals() and output2) else output
+    missing_raw = find_missing_symbols(last_output, symbol)
+    failure_symbols = list(dict.fromkeys(item[0] for item in missing_raw))
+
+    _safe_append_ledger(
+        repo_root,
+        build_record(
+            operation=operation,
+            symbol=symbol,
+            params=params or {},
+            outcome="rolled_back",
+            static_files=changed_files or [],
+            dynamic_risk_files=dynamic_files or [],
+            failure_symbols=failure_symbols,
+            test_cmd=test_cmd,
+        ),
+    )
     return 1
 
 
@@ -272,6 +449,10 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str,
               dry_run: bool = False) -> int:
     repo_root = os.path.abspath(repo_root)
 
+    # 1. At start: query prior failures and successes
+    prior_failures = ledger.find_prior_failures(repo_root, "rename", symbol)
+    prior_successes = ledger.find_prior_successes(repo_root, "rename", symbol)
+
     # ── 1. MAP ────────────────────────────────────────────────────────────
     print("=" * 60)
     print("  STEP 1: MAP")
@@ -300,6 +481,7 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str,
         print("    (none)")
 
     _print_blast_radius(repo_root, symbol)
+    _print_prior_history_map(prior_successes, prior_failures, operation="rename", symbol=symbol)
 
     if not result.static_files:
         print(_yellow(f"\n  WARNING: no static references to '{symbol}' found; nothing to do."))
@@ -313,10 +495,15 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str,
     print("    these can't be safely auto-changed, so I'll flag them instead of guessing.")
     print("  (Technical) dynamic-risk check (nothing changed yet)")
     print("=" * 60)
+    _print_prior_history_warn(prior_failures, result.dynamic_risk_files)
     if result.has_dynamic_risk:
         print(_yellow(f"  ⚠ WARNING: '{symbol}' appears inside string literals in:"))
+        all_implicated = {f for fail in prior_failures for f in fail.get("dynamic_risk_files", [])}
         for f in result.dynamic_risk_files:
-            print(_yellow(f"    - {f}"))
+            if f in all_implicated:
+                print(_yellow(f"    - {f} (REPEAT OFFENDER — implicated in prior rollback)"))
+            else:
+                print(_yellow(f"    - {f}"))
         if language_of_files(result.dynamic_risk_files) == {"javascript"}:
             print(_yellow("  These files access the symbol by name at runtime "
                           "(e.g. obj['name'] — bracket-notation member access)."))
@@ -355,7 +542,8 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str,
     print(f"  (Technical) renaming '{symbol}' → '{to}' in static files")
     print("=" * 60)
     try:
-        changes = rename_in_files(repo_root, symbol, to, result.static_files)
+        file_spans = {rel: ref.static_spans for rel, ref in result.files.items()}
+        changes = rename_in_files(repo_root, symbol, to, result.static_files, file_spans=file_spans)
         total_edits = 0
         for f, count in changes.items():
             print(f"    {f}: {count} replacement(s)")
@@ -368,18 +556,43 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str,
         print(_red(f"  ERROR during rename: {e}"))
         restore_snapshot(snapshot, repo_root)
         cleanup_snapshot(snapshot)
+        _safe_append_ledger(
+            repo_root,
+            build_record(
+                operation="rename",
+                symbol=symbol,
+                params={"to": to},
+                outcome="error",
+                static_files=result.static_files,
+                dynamic_risk_files=result.dynamic_risk_files,
+                failure_symbols=[],
+                test_cmd=test_cmd,
+            ),
+        )
         return 1
 
     # ── 5. VERIFY ─────────────────────────────────────────────────────────
     action_desc = f"Rename symbol '{symbol}' → '{to}' across codebase"
     return _verify_step(repo_root, test_cmd, snapshot, symbol,
                         result.dynamic_risk_files, action_desc=action_desc,
-                        changed_files=result.static_files)
+                        changed_files=result.static_files,
+                        operation="rename",
+                        params={"to": to})
 
 
 def do_extract(repo_root: str, rel_file: str, start: int, end: int,
                name: str, test_cmd: str, dry_run: bool = False) -> int:
+    err = check_supported_extension("extract-function", rel_file)
+    if err:
+        print(_red(err))
+        return 2
+
     repo_root = os.path.abspath(repo_root)
+
+    # 1. At start: query prior failures and successes
+    prior_failures = ledger.find_prior_failures(repo_root, "extract-function", name)
+    prior_successes = ledger.find_prior_successes(repo_root, "extract-function", name)
+
     filepath = os.path.join(repo_root, rel_file)
 
     # ── 1. MAP ────────────────────────────────────────────────────────────
@@ -404,6 +617,7 @@ def do_extract(repo_root: str, rel_file: str, start: int, end: int,
     print(f"  Extracting it into a new function named '{name}'")
     print("  Derived parameters : ", plan.parameters or "(none)")
     print("  Values passed back : ", plan.returned or "(none)")
+    _print_prior_history_map(prior_successes, prior_failures, operation="extract-function", symbol=name)
 
     # ── 2. WARN ───────────────────────────────────────────────────────────
     print()
@@ -412,6 +626,7 @@ def do_extract(repo_root: str, rel_file: str, start: int, end: int,
     print("  → Checking inputs, outputs, and side-effects before changing anything...")
     print("  (Technical) analyzing extracted block dependencies (nothing changed yet)")
     print("=" * 60)
+    _print_prior_history_warn(prior_failures, [])
     if plan.returned:
         print("  The extracted function will return:"
               f" {', '.join(plan.returned)}")
@@ -448,17 +663,42 @@ def do_extract(repo_root: str, rel_file: str, start: int, end: int,
         print(_red(f"  ERROR during extraction: {e}"))
         restore_snapshot(snapshot, repo_root)
         cleanup_snapshot(snapshot)
+        _safe_append_ledger(
+            repo_root,
+            build_record(
+                operation="extract-function",
+                symbol=name,
+                params={"file": rel_file, "start_line": start, "end_line": end},
+                outcome="error",
+                static_files=[rel_file],
+                dynamic_risk_files=[],
+                failure_symbols=[],
+                test_cmd=test_cmd,
+            ),
+        )
         return 1
 
     # ── 5. VERIFY ─────────────────────────────────────────────────────────
     action_desc = f"Extract lines {start}-{end} of {rel_file} into function '{name}'"
     return _verify_step(repo_root, test_cmd, snapshot, name, [],
-                        action_desc=action_desc, changed_files=[rel_file])
+                        action_desc=action_desc, changed_files=[rel_file],
+                        operation="extract-function",
+                        params={"file": rel_file, "start_line": start, "end_line": end})
 
 
 def do_move(repo_root: str, symbol: str, source: str, target: str,
             test_cmd: str, dry_run: bool = False) -> int:
+    for f in (source, target):
+        err = check_supported_extension("move-symbol", f)
+        if err:
+            print(_red(err))
+            return 2
+
     repo_root = os.path.abspath(repo_root)
+
+    # 1. At start: query prior failures and successes
+    prior_failures = ledger.find_prior_failures(repo_root, "move-symbol", symbol)
+    prior_successes = ledger.find_prior_successes(repo_root, "move-symbol", symbol)
 
     # ── 1. MAP ────────────────────────────────────────────────────────────
     print("=" * 60)
@@ -485,6 +725,7 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
         print("    (none)")
 
     _print_blast_radius(repo_root, symbol)
+    _print_prior_history_map(prior_successes, prior_failures, operation="move-symbol", symbol=symbol)
 
     if not os.path.isfile(os.path.join(repo_root, source)):
         print(_red(f"ERROR: source file not found: {source}"))
@@ -506,10 +747,15 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
     print("    these can't be safely auto-changed, so I'll flag them instead of guessing.")
     print("  (Technical) dynamic-risk check (nothing changed yet)")
     print("=" * 60)
+    _print_prior_history_warn(prior_failures, result.dynamic_risk_files)
     if result.has_dynamic_risk:
         print(_yellow(f"  ⚠ WARNING: '{symbol}' appears inside string literals in:"))
+        all_implicated = {f for fail in prior_failures for f in fail.get("dynamic_risk_files", [])}
         for f in result.dynamic_risk_files:
-            print(_yellow(f"    - {f}"))
+            if f in all_implicated:
+                print(_yellow(f"    - {f} (REPEAT OFFENDER — implicated in prior rollback)"))
+            else:
+                print(_yellow(f"    - {f}"))
         if language_of_files(result.dynamic_risk_files) == {"javascript"}:
             print(_yellow("  Those dynamic references (e.g. obj['name']) cannot be "
                           "rewritten automatically."))
@@ -554,13 +800,106 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
         print(_red(f"  ERROR during move: {e}"))
         restore_snapshot(snapshot, repo_root)
         cleanup_snapshot(snapshot)
+        _safe_append_ledger(
+            repo_root,
+            build_record(
+                operation="move-symbol",
+                symbol=symbol,
+                params={"source": source, "target": target},
+                outcome="error",
+                static_files=result.static_files,
+                dynamic_risk_files=result.dynamic_risk_files,
+                failure_symbols=[],
+                test_cmd=test_cmd,
+            ),
+        )
         return 1
 
     # ── 5. VERIFY ─────────────────────────────────────────────────────────
     action_desc = f"Move symbol '{symbol}' from {source} → {target}"
     return _verify_step(repo_root, test_cmd, snapshot, symbol,
                         result.dynamic_risk_files, action_desc=action_desc,
-                        changed_files=list(changes.keys()))
+                        changed_files=list(changes.keys()),
+                        operation="move-symbol",
+                        params={"source": source, "target": target})
+
+
+def do_history(repo_root: str, symbol: str | None = None,
+               limit: int | None = None, as_json: bool = False) -> int:
+    repo_root = os.path.abspath(repo_root)
+    if not os.path.isdir(repo_root):
+        print(_red(f"ERROR: repo root does not exist: {repo_root}"))
+        return 2
+
+    records = read_records(repo_root)
+    if symbol:
+        records = [r for r in records if r.get("symbol") == symbol]
+
+    if limit and limit > 0:
+        records = records[-limit:]
+
+    if as_json:
+        print(json.dumps(records, indent=2, ensure_ascii=False))
+        return 0
+
+    print("=" * 60)
+    print("  REFACTOR GUARD HISTORY")
+    print(f"  Repository: {repo_root}")
+    if symbol:
+        print(f"  Filtered by symbol: {symbol}")
+    print("=" * 60)
+
+    if not records:
+        print("  No refactor history recorded yet.")
+        print("=" * 60)
+        return 0
+
+    print(f"  Total records: {len(records)}\n")
+    for idx, rec in enumerate(records, start=1):
+        ts = rec.get("timestamp", "")
+        date_str = format_timestamp_date(ts)
+        op = rec.get("operation", "unknown")
+        sym = rec.get("symbol", "unknown")
+        outcome = rec.get("outcome", "unknown").upper()
+        params = rec.get("params", {})
+
+        if outcome == "SUCCESS":
+            outcome_colored = _green(outcome)
+        elif outcome == "ROLLED_BACK":
+            outcome_colored = _yellow(outcome)
+        else:
+            outcome_colored = _red(outcome)
+
+        if op == "rename":
+            to_val = params.get("to", "")
+            action_desc = f"rename '{sym}' → '{to_val}'"
+        elif op == "extract-function":
+            f_val = params.get("file", "")
+            s_val = params.get("start_line", "")
+            e_val = params.get("end_line", "")
+            action_desc = f"extract lines {s_val}-{e_val} in {f_val} → '{sym}'"
+        elif op == "move-symbol":
+            src_val = params.get("source", "")
+            tgt_val = params.get("target", "")
+            action_desc = f"move '{sym}' from {src_val} → {tgt_val}"
+        else:
+            action_desc = f"{op} '{sym}'"
+
+        print(f"  [{idx}] {ts} ({date_str})")
+        print(f"      Action       : {action_desc}")
+        print(f"      Outcome      : {outcome_colored}")
+        if rec.get("static_files"):
+            print(f"      Static files : {', '.join(rec['static_files'])}")
+        if rec.get("dynamic_risk_files"):
+            print(f"      Risky files  : {', '.join(rec['dynamic_risk_files'])}")
+        if rec.get("failure_symbols"):
+            print(f"      Failed syms  : {', '.join(rec['failure_symbols'])}")
+        if rec.get("test_cmd"):
+            print(f"      Test command : {rec['test_cmd']}")
+        print()
+
+    print("=" * 60)
+    return 0
 
 
 def main(argv=None):
@@ -579,6 +918,10 @@ def main(argv=None):
         code = do_move(args.repo_root, args.symbol, args.source,
                        args.target, args.test_cmd,
                        dry_run=args.dry_run)
+        return code
+    elif args.command == "history":
+        code = do_history(args.repo_root, symbol=args.symbol,
+                          limit=args.limit, as_json=getattr(args, "json", False))
         return code
     return 0
 

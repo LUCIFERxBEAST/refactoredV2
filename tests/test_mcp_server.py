@@ -5,9 +5,11 @@ from src.mcp_server import (
     refactor_guard_rename,
     refactor_guard_extract_function,
     refactor_guard_move_symbol,
+    refactor_guard_history,
     refactor_rename,
     refactor_extract_function,
     refactor_move_symbol,
+    refactor_history,
 )
 
 
@@ -108,4 +110,64 @@ def test_mcp_aliases(tmp_path):
         test_cmd="pytest -q",
     )
     assert "[SUCCESS]" in output
+
+
+def test_mcp_extract_unsupported_language_fails_fast(tmp_path):
+    repo = _sample_repo_copy(tmp_path)
+    output = refactor_guard_extract_function(
+        repo_root=str(repo),
+        rel_file="index.js",
+        start_line=1,
+        end_line=5,
+        name="helper",
+        test_cmd="node --test",
+    )
+    assert "[FAILURE (exit code 2)]" in output
+    assert "extract-function" in output
+    assert "does not support '.js'" in output
+    assert "Operation / Language support matrix:" in output
+
+
+def test_mcp_move_unsupported_language_fails_fast(tmp_path):
+    repo = _sample_repo_copy(tmp_path)
+    output = refactor_guard_move_symbol(
+        repo_root=str(repo),
+        symbol="formatItem",
+        source="index.js",
+        target="pkg/reportbuilder.py",
+        test_cmd="node --test",
+    )
+    assert "[FAILURE (exit code 2)]" in output
+    assert "move-symbol" in output
+    assert "does not support '.js'" in output
+    assert "Operation / Language support matrix:" in output
+
+
+def test_mcp_history(tmp_path):
+    repo = _sample_repo_copy(tmp_path)
+    # 1. Initially empty
+    out_empty = refactor_guard_history(repo_root=str(repo))
+    assert "[SUCCESS]" in out_empty
+    assert "No refactor history recorded yet" in out_empty
+
+    # 2. Run a rename
+    refactor_guard_rename(
+        repo_root=str(repo),
+        symbol="build_report",
+        to="generate_report",
+        test_cmd="pytest -q",
+    )
+
+    # 3. History now has records
+    out_history = refactor_guard_history(repo_root=str(repo))
+    assert "[SUCCESS]" in out_history
+    assert "Total records: 1" in out_history
+    assert "rename 'build_report' → 'generate_report'" in out_history
+    assert "SUCCESS" in out_history
+
+    # 4. Test alias
+    out_alias = refactor_history(repo_root=str(repo))
+    assert "[SUCCESS]" in out_alias
+
+
 
