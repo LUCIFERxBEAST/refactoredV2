@@ -85,6 +85,31 @@ def _js_name_matches(dotted_name: str, symbol: str) -> bool:
     return dotted_name == symbol or symbol in dotted_name.split('.')
 
 
+def language_of_files(paths: List[str]) -> set:
+    """Language families referenced by files, inferred from their extension.
+
+    Returns a set containing 'python' and/or 'javascript'. Unknown
+    extensions are ignored.
+    """
+    langs = set()
+    for p in paths:
+        ext = os.path.splitext(p)[1].lower()
+        if ext == ".py":
+            langs.add("python")
+        elif ext in (".js", ".ts"):
+            langs.add("javascript")
+    return langs
+
+
+def _dynamic_example(langs) -> str:
+    """Human-readable dynamic-access example for the given languages."""
+    if langs == {"javascript"}:
+        return "obj['symbol'] — bracket-notation member access"
+    if langs == {"python"}:
+        return "getattr(obj, 'symbol')"
+    return "getattr(obj, 'symbol') or obj['symbol']"
+
+
 def find_missing_symbols(test_output: str, symbol: str) -> List[str]:
     """
     Parse test failure output for missing-symbol names.
@@ -140,6 +165,17 @@ def diagnose_failures(
             "Review the test output above for other potential issues."
         )
 
+    # Deduplicate: two failing tests often crash on the same missing name.
+    seen = set()
+    unique_missing = []
+    for name, source in missing:
+        key = (name, source)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_missing.append((name, source))
+    missing = unique_missing
+
     lines = []
     lines.append("The test failures reference the renamed symbol "
                  f"'{symbol}':")
@@ -155,11 +191,11 @@ def diagnose_failures(
         lines.append(">>> Likely caused by the dynamic reference in:")
         for f in matching_dynamic:
             lines.append(f"    {f}")
+        example = _dynamic_example(language_of_files(matching_dynamic))
         lines.append(
             ">>> The symbol name is used inside a string literal there "
-            "(e.g. getattr(obj, 'symbol') or obj['symbol']), so it was "
-            "deliberately not renamed and now points at code that no longer "
-            "exists."
+            f"(e.g. {example}), so it was deliberately not renamed and now "
+            "points at code that no longer exists."
         )
     else:
         lines.append(

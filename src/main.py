@@ -23,7 +23,7 @@ from .extract_function import analyze_block, extract_into_file
 from .move_symbol import move_symbol as apply_move_symbol
 from .refactor_ops import rename_in_files
 from .snapshot import create_snapshot, restore_snapshot, cleanup_snapshot
-from .test_runner import run_tests, diagnose_failures
+from .test_runner import run_tests, diagnose_failures, language_of_files
 
 
 def build_parser():
@@ -181,7 +181,12 @@ def do_rename(repo_root: str, symbol: str, to: str, test_cmd: str) -> int:
         print(f"  ⚠ WARNING: '{symbol}' appears inside string literals in:")
         for f in result.dynamic_risk_files:
             print(f"    - {f}")
-        print("  These files use the symbol dynamically (e.g. getattr(obj, 'name')).")
+        if language_of_files(result.dynamic_risk_files) == {"javascript"}:
+            print("  These files access the symbol by name at runtime "
+                  "(e.g. obj['name'] — bracket-notation member access).")
+        else:
+            print("  These files use the symbol dynamically "
+                  "(e.g. getattr(obj, 'name')).")
         print("  They will NOT be renamed automatically.")
     else:
         print("  No dynamic-risk references detected — safe to proceed.")
@@ -332,7 +337,12 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
         print(f"  ⚠ WARNING: '{symbol}' appears inside string literals in:")
         for f in result.dynamic_risk_files:
             print(f"    - {f}")
-        print("  Those dynamic references cannot be rewritten automatically.")
+        if language_of_files(result.dynamic_risk_files) == {"javascript"}:
+            print("  Those dynamic references (e.g. obj['name']) cannot be "
+                  "rewritten automatically.")
+        else:
+            print("  Those dynamic references (e.g. getattr(obj, 'name')) "
+                  "cannot be rewritten automatically.")
     else:
         print("  No dynamic-risk references detected — safe to proceed.")
 

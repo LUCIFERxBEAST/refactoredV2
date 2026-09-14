@@ -222,6 +222,31 @@ class TestDiagnoseFailures:
         diag = diagnose_failures(out, "x", [])
         assert "No dynamic-risk references" in diag
 
+    def test_python_dynamic_file_uses_python_example(self):
+        out = ("E   AttributeError: module 'pkg.mathutils' "
+               "has no attribute 'compute_total'")
+        diag = diagnose_failures(out, "compute_total", ["pkg/dynamic_caller.py"])
+        assert "getattr(obj, 'symbol')" in diag
+        assert "bracket-notation" not in diag
+
+    def test_js_dynamic_file_uses_js_example(self):
+        out = "TypeError: mathutils.computeTotal is not a function"
+        diag = diagnose_failures(out, "computeTotal", ["pkg/dynamic_call.js"])
+        assert "obj['symbol']" in diag
+        assert "bracket-notation" in diag
+        assert "getattr" not in diag
+
+    def test_mixed_languages_show_both_examples(self):
+        out = "NameError: name 'swap' is not defined"
+        diag = diagnose_failures(out, "swap", ["a.py", "b.js"])
+        assert "getattr(obj, 'symbol') or obj['symbol']" in diag
+
+    def test_duplicate_failures_are_deduplicated(self):
+        out = ("TypeError: mathutils.computeTotal is not a function\n"
+               "TypeError: mathutils.computeTotal is not a function")
+        diag = diagnose_failures(out, "computeTotal", ["pkg/dynamic_call.js"])
+        assert diag.count("is missing") == 1
+
 
 class TestSampleRepoIntegration:
 
