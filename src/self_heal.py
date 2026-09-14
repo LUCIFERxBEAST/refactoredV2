@@ -49,7 +49,13 @@ _SYSTEM_PROMPT = (
     "refactor's test output, the symbol that was renamed, and any "
     "dynamic-risk references flagged before the refactor, explain in 2-3 "
     "sentences: (a) the most likely root cause, and (b) a specific one-line "
-    "fix the developer should apply manually before retrying."
+    "fix the developer should apply manually before retrying.\n\n"
+    "IMPORTANT: Do not suggest hardcoding a specific value, special-casing this "
+    "one instance, or any fix that would only work for this particular failing "
+    "test. Your suggested fix must address the underlying general behavior of the "
+    "code — the same class of problem should be fixed for any similar case, not "
+    "just this exact one. If you cannot identify a general fix, say so explicitly "
+    "instead of proposing a narrow workaround."
 )
 
 
@@ -110,9 +116,26 @@ def format_diagnosis(raw: str) -> str:
         elif low.startswith("suggested fix"):
             fix_found = True
             lines.append("  💡 Suggested fix: " + stripped.split(":", 1)[-1].strip())
+            if _check_for_hardcoding(raw):
+                lines.append("  ⚠ This suggested fix may be overly specific to this one case — review it "
+                             "carefully before applying, and consider whether the general logic needs "
+                             "fixing instead.")
         else:
             lines.append(f"  {stripped}")
     if not root_found and not fix_found:
+def _check_for_hardcoding(text: str) -> bool:
+    \"\"\"Return True if the text looks like it suggests a hardcoded/narrow fix.\"\"\"
+    patterns = [
+        "just return",
+        "hardcode",
+        "special case",
+        "for this specific",
+        "only for this test",
+    ]
+    low = text.lower()
+    return any(p in low for p in patterns)
+
+
         # no markers — dump the whole reply verbatim
         return "\n".join(
             f"  {l}" for l in raw.splitlines() if l.strip()
