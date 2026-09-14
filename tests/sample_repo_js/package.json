@@ -1,0 +1,9 @@
+{
+  "name": "sample-repo-js",
+  "version": "1.0.0",
+  "private": true,
+  "description": "JavaScript sample repo fixture for Refactor Guard demos",
+  "scripts": {
+    "test": "node --test tests"
+  }
+}
