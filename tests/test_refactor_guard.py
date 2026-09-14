@@ -458,6 +458,77 @@ class TestJsMissingSymbols:
         out = "ReferenceError: sumItems is not defined"
         assert find_missing_symbols(out, "sumItems") == [("sumItems", None)]
 
-    def test_js_unrelated_error_ignored(self):
-        out = "TypeError: otherThing.foo is not a function"
-        assert find_missing_symbols(out, "computeTotal") == []
+    def test_js_bracket_notation_type_error(self):
+        """V8 sometimes renders bracket access verbatim in the error text."""
+        out = 'TypeError: mathutils["computeTotal"] is not a function'
+        results = find_missing_symbols(out, "computeTotal")
+        assert len(results) == 1
+        assert results[0][1] is None          # no import source
+
+    def test_js_single_quote_bracket_type_error(self):
+        out = "TypeError: mathutils['computeTotal'] is not a function"
+        results = find_missing_symbols(out, "computeTotal")
+        assert len(results) == 1
+        assert results[0][1] is None
+
+    def test_js_read_property_error(self):
+        """'Cannot read properties of undefined' when the object itself is gone."""
+        out = ("TypeError: Cannot read properties of undefined "
+               "(reading 'computeTotal')")
+        results = find_missing_symbols(out, "computeTotal")
+        assert len(results) == 1
+        assert results[0] == ("computeTotal", None)
+
+    def test_js_read_property_error_singular(self):
+        """Older V8 used singular 'property' instead of 'properties'."""
+        out = ("TypeError: Cannot read property 'computeTotal' of undefined")
+        results = find_missing_symbols(out, "computeTotal")
+        assert len(results) == 1
+        assert results[0] == ("computeTotal", None)
+
+    def test_js_ansi_colored_type_error(self):
+        """Node may colorize output — ANSI codes must not break the parser."""
+        out = ("\x1b[31mTypeError: mathutils.computeTotal is not a function\x1b[0m")
+        results = find_missing_symbols(out, "computeTotal")
+        assert len(results) == 1
+        assert results[0] == ("mathutils.computeTotal", None)
+
+    def test_js_diagnosis_fallback_via_stack_trace(self):
+        """When the error text doesn't name the symbol, but the stack trace
+        references a dynamic-risk file, diagnose_failures still blames it."""
+        # Node stack traces use forward slashes on Linux/macOS and backslashes
+        # on Windows.  Forward slashes are simplest for a synthetic test.
+        fake_output = (
+            "✖ some test failed\n"
+            "  TypeError: somethingElse is not a function\n"
+            "    at callIt (C:/repo/pkg/dynamic_call.js:8:35)\n"
+        )
+        result = diagnose_failures(
+            fake_output, "computeTotal", ["pkg/dynamic_call.js"]
+        )
+        assert "pkg/dynamic_call.js" in result
+        assert "not mention the renamed symbol directly" in result
+        assert "No error mentioning" not in result
+
+    def test_js_diagnosis_fallback_via_stack_trace_backslash(self):
+        """Same as above but with Windows-style backslash paths."""
+        # To avoid shell-escaping issues, build the string via repr-free
+        # concatenation of a single backslash.
+        BS = chr(0x5C)  # single backslash
+        fake_output = (
+            "✖ some test failed\n"
+            "  TypeError: somethingElse is not a function\n"
+            f"    at callIt (C:{BS}repo{BS}pkg{BS}dynamic_call.js:8:35)\n"
+        )
+        result = diagnose_failures(
+            fake_output, "computeTotal", ["pkg/dynamic_call.js"]
+        )
+        assert "pkg/dynamic_call.js" in result
+        assert "not mention the renamed symbol directly" in result
+
+    def test_js_diagnosis_fallback_no_match_generic(self):
+        """When nothing matches at all, the generic message is returned."""
+        result = diagnose_failures(
+            "PASSED: all good", "computeTotal", []
+        )
+        assert "No error mentioning" in result

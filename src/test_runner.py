@@ -68,21 +68,68 @@ _IMPORT_ERROR_PATTERN = re.compile(
     r"|ImportError:\s*cannot import name\s+'([^']+)'\s+from\s+'([^']+)'"
 )
 # JavaScript runtime errors (Node test runner output)
+#
+# V8 normalizes member access when building these messages, but the exact
+# shape varies by Node version and how the property was accessed:
+#   TypeError: mathutils.computeTotal is not a function     (dot notation)
+#   TypeError: mathutils["computeTotal"] is not a function  (bracket notation)
+#   TypeError: mathutils['computeTotal'] is not a function  (bracket, single)
+#   TypeError: Cannot read properties of undefined (reading 'computeTotal')
+#               (when the *object* went missing, not the property)
+# So capture the whole expression text and extract the identifier tokens from
+# it later — that is robust to the quoting/notation the runtime happens to use.
 _JS_TYPE_ERROR_PATTERN = re.compile(
-    r"TypeError:\s*([\w$][\w$.]*) is not a function"
+    r"TypeError:\s*(.+?)\s+is not a function"
 )
 _JS_REFERENCE_ERROR_PATTERN = re.compile(
-    r"ReferenceError:\s*([\w$][\w$.]*) is not defined"
+    r"ReferenceError:\s*(.+?)\s+is not defined"
+)
+_JS_READ_PROPERTY_PATTERN = re.compile(
+    r"Cannot read properties of (?:undefined|null) \(reading '([^']+)'\)"
+)
+# Older V8 (< 9.x / Node < 15) used a different phrasing:
+#   "Cannot read property 'foo' of undefined"
+_JS_READ_PROPERTY_OLD = re.compile(
+    r"Cannot read property '([^']+)' of (?:undefined|null)"
 )
 
+# Match ANSI color / control escape sequences (Node may colorize output).
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
-def _js_name_matches(dotted_name: str, symbol: str) -> bool:
-    """Whether a dotted JS name refers to the renamed symbol.
 
-    Handles both a bare name (`computeTotal`) and names reached through a
-    member chain (`mathutils.computeTotal`).
+def _clean_output(text: str) -> str:
+    """Strip ANSI color/control sequences so error parsing is color-safe."""
+    return _ANSI_ESCAPE.sub("", text)
+
+
+def _js_tokens(expression: str) -> set:
+    """Identifier-ish tokens inside a JS error expression, e.g. 'computeTotal'.
+
+    'mathutils.computeTotal'    -> {'mathutils', 'computeTotal'}
+    'mathutils["computeTotal"]' -> {'mathutils', 'computeTotal'}
     """
-    return dotted_name == symbol or symbol in dotted_name.split('.')
+    return set(re.findall(r"[A-Za-z_$][\w$]*", expression))
+
+
+def _js_name_matches(expression: str, symbol: str) -> bool:
+    """Whether a JS error expression refers to the renamed symbol.
+
+    Handles dot notation (`mathutils.computeTotal`), bracket notation
+    (`mathutils["computeTotal"]`), and bare names (`computeTotal`).
+    """
+    return symbol in _js_tokens(expression)
+
+
+def _dynamic_files_in_output(test_output: str,
+                             dynamic_risk_files: List[str]) -> List[str]:
+    """Dynamic-risk file paths referenced in test output (e.g. stack traces).
+
+    Normalizes path separators so Windows stack frames (`pkg\\dynamic_call.js`)
+    match the relative paths from the MAP scan (`pkg/dynamic_call.js`).
+    """
+    normalized = test_output.replace("\\", "/")
+    return [f for f in dynamic_risk_files
+            if f.replace("\\", "/") in normalized]
 
 
 def language_of_files(paths: List[str]) -> set:
@@ -117,6 +164,7 @@ def find_missing_symbols(test_output: str, symbol: str) -> List[str]:
     the symbol we renamed, if any.
     """
     results = []
+    test_output = _clean_output(test_output)
 
     for m in _NAME_ERROR_PATTERN.finditer(test_output):
         name = m.group(1)
@@ -136,13 +184,23 @@ def find_missing_symbols(test_output: str, symbol: str) -> List[str]:
             results.append((name, source))
 
     for m in _JS_TYPE_ERROR_PATTERN.finditer(test_output):
-        name = m.group(1)
+        name = m.group(1).strip()
         if _js_name_matches(name, symbol):
             results.append((name, None))
 
     for m in _JS_REFERENCE_ERROR_PATTERN.finditer(test_output):
-        name = m.group(1)
+        name = m.group(1).strip()
         if _js_name_matches(name, symbol):
+            results.append((name, None))
+
+    for m in _JS_READ_PROPERTY_PATTERN.finditer(test_output):
+        name = m.group(1)
+        if name == symbol:
+            results.append((name, None))
+
+    for m in _JS_READ_PROPERTY_OLD.finditer(test_output):
+        name = m.group(1)
+        if name == symbol:
             results.append((name, None))
 
     return results
@@ -159,7 +217,32 @@ def diagnose_failures(
     in the dynamic-risk list, point at the specific file explicitly.
     """
     missing = find_missing_symbols(test_output, symbol)
+
     if not missing:
+        # Belt-and-suspenders fallback: the symbol wasn't named in any
+        # error message, but Node's stack trace may still point at one of
+        # the dynamic-risk files.  This covers message-shape variants that
+        # the regex above doesn't recognise (very old Node, custom reporters,
+        # non-ASCII locales, etc.).
+        cleaned = _clean_output(test_output)
+        frame_files = _dynamic_files_in_output(cleaned, dynamic_risk_files)
+        if frame_files:
+            lines = [
+                "The test output does not mention the renamed symbol directly, but"
+                " the failure stack trace points into a file that was flagged as a"
+                " dynamic-risk reference during MAP:",
+                "",
+                ">>> Likely caused by the dynamic reference in:",
+            ]
+            for f in frame_files:
+                lines.append(f"    {f}")
+            lines.append(
+                ">>> The symbol name is used inside a string literal there, so "
+                "it was deliberately not renamed and now points at code that "
+                "no longer exists."
+            )
+            return "\n".join(lines)
+
         return (
             "No error mentioning the renamed symbol was found. "
             "Review the test output above for other potential issues."
