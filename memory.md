@@ -3,7 +3,7 @@
 **Purpose:** Persistent context for AI agents and new contributors. Read this before making changes.
 
 **Last updated:** September 14, 2026
-**Project root:** `C:\Users\pondh\Downloads\REFACTOR-GAURD`
+**Project root:** `<local project root>`
 **Git:** `main` branch, HEAD `6b8fae1` — "Clarify SUCCESS/FAILURE summary file lists in CLI output"
 
 ---

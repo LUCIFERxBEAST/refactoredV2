@@ -287,6 +287,102 @@ Once registered, the AI assistant has access to the following tools:
 
 ---
 
+## Minimal Patch Guard
+
+The **Minimal Patch Guard (MPG)** is a standalone review pipeline that checks any patch — yours or
+an AI agent's — against a baseline.  It catches over-fit patches: hardcoded outputs, test-specific
+branches, removed input dependencies, weakened tests, exception suppression, logic bypass, scope
+creep, and more.
+
+### CLI usage
+
+```bash
+python -m src.main review-patch \
+  --repo-root /path/to/your/project \
+  --base-ref HEAD \
+  --test-cmd "pytest -q" \
+  --run-generalization
+```
+
+Key flags:
+
+| Flag | Purpose |
+|---|---|
+| `--repo-root` | Path to the target repo (required) |
+| `--base-ref` | Git ref or base-folder directory to diff against (default: `HEAD`) |
+| `--test-cmd` | Verification command; use `""` to skip |
+| `--strict-minimality` | Reject any patch with unrelated / expanded changes |
+| `--require-approval` | Force `require approval` instead of `accept` where borderline |
+| `--run-generalization` | Run safe generalization probes (edge / metamorphic / differential) |
+| `--skip-generalization` | Never auto-trigger generalization even when hardcoding is found |
+| `--output-format` | `text` (default) or `json` |
+
+Run `python -m src.main review-patch --help` for the full list.
+
+### Worked example: hardcoded test output
+
+A developer patches `add()` to special-case the test's input instead of fixing the real logic:
+
+```python
+# Before (committed baseline)
+def add(a, b):
+    return a + b
+
+# After (the patch under review)
+def add(a, b):
+    if a == 2 and b == 3:
+        return 5
+    return a + b
+```
+
+Running `review-patch` against this change produces:
+
+```
+  SCORE      : 75/100  (risky)  -> REQUIRE_APPROVAL
+
+  FINDINGS
+    [low ] MPG-003 — Special-case branch added on a literal input
+        pkg/hardcoded.py::add
+        New branch in 'add' special-cases the literal a Eq 2.
+        Only justified if it fixes a real bug.
+        evidence: a Eq 2 (new condition)
+    [low ] MPG-003 — Special-case branch added on a literal input
+        pkg/hardcoded.py::add
+        New branch in 'add' special-cases the literal b Eq 3.
+        Only justified if it fixes a real bug.
+        evidence: b Eq 3 (new condition)
+
+  VERIFICATION
+    not run (no test command supplied)
+
+  GENERALIZATION
+    not_run (not requested (set run_generalization=True to probe))
+
+  SUMMARY
+    Patched 1 file(s) with 2 finding(s); MPG score 75/100 (risky).
+    Strongest signal: special_case_branch.
+```
+
+The patch is flagged because it hardcodes the exact inputs the test uses (`a == 2`, `b == 3`)
+rather than implementing the general `a + b` logic.
+
+### MPG-specific MCP tools
+
+When using an AI coding assistant, these four MPG tools are available alongside the
+standard refactor tools:
+
+| Tool | What it does |
+|---|---|
+| `refactor_guard_review_patch` | Run the full Minimal Patch Guard review on a candidate diff and return structured JSON (detections, score, decision, generalization probes). |
+| `refactor_guard_check_minimality` | Focus the review on patch minimality/scope: detects unrelated changed files, scope-expansion violations, and footprint violations.  No test suite is run. |
+| `refactor_guard_check_generalization` | Run generalization probes (edge / metamorphic / differential) on changed pure Python functions and return the results as JSON. |
+| `refactor_guard_compare_runs` | Compare baseline vs candidate verification runs: materializes the base tree, runs parse + compile + targeted + full tests on both, and reports which failures are new, resolved, or still failing. |
+
+For the full MPG documentation (scoring model, rule IDs, policy configuration, recipes),
+see [`docs/MPG.md`](docs/MPG.md).
+
+---
+
 ## Project structure
 
 ```
