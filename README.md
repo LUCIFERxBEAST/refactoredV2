@@ -40,6 +40,7 @@ as an afterthought a human runs later.
    expansion. Scores the patch, decides accept/warn/require-approval/reject,
    and can run generalization probes (edge/metamorphic/differential testing)
    on changed pure functions to confirm the fix actually generalizes.
+   → [Full MPG documentation](docs/MPG.md)
 5. **MCP server** — every capability above is callable by an AI coding agent
    directly, not just from a terminal.
 
