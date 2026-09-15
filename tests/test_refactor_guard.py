@@ -165,6 +165,28 @@ class TestSnapshot:
         finally:
             cleanup_snapshot(snap)
 
+    def test_roundtrip_with_readonly_git_objects(self, tmp_path):
+        # Git stores object files read-only; a plain shutil.rmtree aborts the
+        # rollback with WinError 5 on Windows. Make sure restore survives it.
+        repo = tmp_path / "repo-ro"
+        obj_path = repo / ".git" / "objects" / "16" / "523ae57c1b133bc1a210ddd3404166219a2282"
+        obj_path.parent.mkdir(parents=True)
+        obj_path.write_text("fake git object\n")
+        os.chmod(str(obj_path), 0o444)  # read-only, like a real git object file
+        (repo / "a.py").write_text("x = 1\n")
+        snap = create_snapshot(str(repo))
+        try:
+            os.chmod(str(obj_path), 0o644)  # allow us to mutate the working tree
+            obj_path.write_text("mutated object\n")
+            os.chmod(str(obj_path), 0o444)
+            (repo / "a.py").write_text("x = 2\n")
+            restore_snapshot(snap, str(repo))
+            restored = repo / ".git" / "objects" / "16" / "523ae57c1b133bc1a210ddd3404166219a2282"
+            assert restored.read_text() == "fake git object\n"
+            assert (repo / "a.py").read_text() == "x = 1\n"
+        finally:
+            cleanup_snapshot(snap)
+
 
 class TestBuildCommand:
 
