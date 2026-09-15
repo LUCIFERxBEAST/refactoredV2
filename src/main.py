@@ -131,6 +131,56 @@ def build_parser():
         "--dry-run", action="store_true", default=False,
         help="Simulate the refactoring without modifying files on disk or running tests",
     )
+
+    review_p = sub.add_parser(
+        "review-patch",
+        help="Run the Minimal Patch Guard against the current tree (vs git "
+             "HEAD or a base folder) and report risky patch characteristics.",
+    )
+    review_p.add_argument("--repo-root", required=True, help="Path to the target repo")
+    review_p.add_argument(
+        "--base-ref", default="HEAD",
+        help="Baseline to diff against: a git ref (default HEAD) or a "
+             "directory containing the base snapshot",
+    )
+    review_p.add_argument(
+        "--test-cmd", default=None,
+        help="Test command to verify both trees, e.g. 'pytest -q'. Use an "
+             "empty string to skip verification.",
+    )
+    review_p.add_argument(
+        "--strict-minimality", action="store_true", default=False,
+        help="Reject any patch containing unrelated/expanded changes",
+    )
+    review_p.add_argument(
+        "--max-files-changed", type=int, default=None,
+        help="Hard cap on changed files before scope-expansion is flagged",
+    )
+    review_p.add_argument(
+        "--max-lines-changed", type=int, default=None,
+        help="Hard cap on total changed lines before scope-expansion is flagged",
+    )
+    review_p.add_argument(
+        "--require-approval", action="store_true", default=False,
+        help="Force 'require approval' instead of 'accept' where borderline",
+    )
+    review_p.add_argument(
+        "--run-generalization", action="store_true", default=False,
+        help="Run the safe generalization probes (edge/metamorphic/differential)",
+    )
+    review_p.add_argument(
+        "--skip-generalization", action="store_true", default=False,
+        help="Never auto-trigger generalization even when hardcoding is found",
+    )
+    review_p.add_argument(
+        "--operation", choices=["rename", "extract-function", "move-symbol"],
+        default=None,
+        help="Declare the operation the patch claims to be, to check its footprint",
+    )
+    review_p.add_argument(
+        "--output-format", choices=["text", "json"], default="text",
+        help="Render the review as human text or as structured JSON",
+    )
     return parser
 
 def _verify_step(repo_root: str, test_cmd: str, snapshot: str,
@@ -563,6 +613,63 @@ def do_move(repo_root: str, symbol: str, source: str, target: str,
                         changed_files=list(changes.keys()))
 
 
+def do_review_patch(repo_root: str, base_ref: str = "HEAD",
+                    test_cmd: str = None, strict_minimality=False,
+                    max_files=None, max_lines=None, require_approval=False,
+                    run_generalization=False, skip_generalization=False,
+                    operation=None, output_format="text") -> int:
+    """
+    Minimal Patch Guard: review the current tree against base_ref and return
+    0 (accept/warn), 1 (require approval) or 2 (reject / usage error).
+    """
+    try:
+        from .minimal_patch_guard import review_patch, reporter
+    except ImportError as exc:  # pragma: no cover
+        print(_red(f"ERROR: Minimal Patch Guard unavailable: {exc}"))
+        return 2
+
+    print()
+    print("=" * 60)
+    print("  MINIMAL PATCH GUARD")
+    print(f"  → Reviewing working tree vs '{base_ref}'")
+    print("=" * 60)
+
+    try:
+        review = review_patch(
+            repo_root=repo_root, base_ref=base_ref,
+            test_cmd=test_cmd,
+            strict_minimality=strict_minimality or None,
+            max_files_changed=max_files,
+            max_lines_changed=max_lines,
+            require_approval=require_approval or None,
+            run_generalization=run_generalization or None,
+            skip_generalization=skip_generalization or None,
+            operation=operation,
+            output_format=output_format,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        print(_red(f"ERROR: {exc}"))
+        return 2
+    except Exception as exc:  # pragma: no cover
+        print(_red(f"ERROR: MPG review failed: {exc}"))
+        return 1
+
+    if output_format == "json":
+        print(reporter.render_json(review))
+    else:
+        print(reporter.render_text(review))
+
+    # Decision -> exit code mapping used by CI and AI assistants.
+    from .minimal_patch_guard import models
+    code = {
+        models.DECISION_ACCEPT: 0,
+        models.DECISION_WARN: 0,
+        models.DECISION_REQUIRE_APPROVAL: 1,
+        models.DECISION_REJECT: 2,
+    }.get(review.decision, 2)
+    return code
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -580,6 +687,16 @@ def main(argv=None):
                        args.target, args.test_cmd,
                        dry_run=args.dry_run)
         return code
+    elif args.command == "review-patch":
+        return do_review_patch(
+            repo_root=args.repo_root, base_ref=args.base_ref,
+            test_cmd=args.test_cmd, strict_minimality=args.strict_minimality,
+            max_files=args.max_files_changed, max_lines=args.max_lines_changed,
+            require_approval=args.require_approval,
+            run_generalization=args.run_generalization,
+            skip_generalization=args.skip_generalization,
+            operation=args.operation, output_format=args.output_format,
+        )
     return 0
 
 
