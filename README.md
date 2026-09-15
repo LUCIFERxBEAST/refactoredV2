@@ -2,16 +2,45 @@
 
 **Samsung PRISM Hackathon — Agentic Code Intelligence**
 
-A multi-language refactoring safety harness that detects stale references across a codebase before, during, and after a change — with automatic rollback when verification fails, persistent audit history, and an automated patch quality gate (**Minimal Patch Guard**).
+An autonomous safety layer for code refactoring and AI-generated modifications: it doesn't just apply code transformations, it maps transitive blast radius before touching disk, snapshots the repository, verifies changes against real-world test suites, self-heals with AI root-cause diagnostics, and — unlike standard refactoring utilities — catches an AI agent's candidate patch cheating its own tests or expanding scope before it ever reaches production.
 
-Supports **three refactoring operations** (`rename`, `extract-function`, `move-symbol`) across **three syntaxes** (Python, JavaScript, TypeScript) using **Tree-sitter** AST parsing, alongside patch verification (`review-patch`) and refactoring ledger inspection (`history`).
+Built to operate seamlessly across two modalities:
+1. **Interactive CLI**: For developers refactoring code, inspecting history, and verifying diffs directly from their terminal.
+2. **Model Context Protocol (MCP) Server**: Directly invokable by AI coding assistants (Claude Code, Cursor, Cline, Windsurf, Antigravity, Claude Desktop) — embedding safety verification directly inside the agent's edit loop rather than as an afterthought run after the damage is done.
 
-> 📚 **Detailed Documentation**:
-> - [System Architecture](doc/ARCHITECTURE.md)
+> 📚 **Detailed Documentation Manuals**:
+> - [Documentation Index](doc/README.md)
+> - [System Architecture & Pipeline](doc/ARCHITECTURE.md)
 > - [CLI Reference Manual](doc/CLI_REFERENCE.md)
 > - [Minimal Patch Guard (MPG) Deep Dive](doc/MINIMAL_PATCH_GUARD.md)
 > - [MCP Agentic Integration Guide](doc/MCP_INTEGRATION_GUIDE.md)
 > - [Snapshot Engine & Audit Ledger](doc/SNAPSHOT_AND_LEDGER.md)
+
+---
+
+## Why This is Agentic, Not Just a Refactor Tool
+
+| Dimension | Conventional Refactor Tools | Refactor Guard |
+|---|---|---|
+| **Pre-Change Visibility** | Blind text find-and-replace; hopes tests still pass | Builds a Tree-sitter AST dependency graph + `networkx` blast radius, flags dynamic-risk string usages, and surfaces repeat-offender files before touching disk |
+| **Failure Recovery** | Leaves the working directory broken with dirty diffs | Zero-copy Git throwaway snapshot with Windows read-only resilience; automatically rolls back cleanly on test failure |
+| **Fault Resolution** | Aborts with error traces on test failure | Queries Google Gemini for automated root-cause diagnosis, verifies suggestions with anti-hardcode guards, and executes bounded self-healing |
+| **Patch Trust Model** | Assumes candidate patches or agent edits are benign | **Minimal Patch Guard (MPG)**: Analyzes diffs against baseline to detect hardcoded values, bypassed tests, weakened assertions, and scope creep |
+| **Generalization & Probes** | Relies solely on existing static test cases | Executes metamorphic & edge-case probes against changed pure functions in isolated subprocesses to confirm fixes generalize |
+| **Institutional Memory** | Each invocation runs stateless from scratch | Persistent audit ledger (`.refactor-guard/ledger.jsonl`) records all outcomes, highlighting repeat-offender dynamic files from past rollbacks |
+| **Agentic Loop Integration** | Human-only terminal commands after edits are made | 16 native FastMCP tools and safety prompts callable by AI coding agents mid-task, ensuring the safety gate lives inside the agent's inner loop |
+
+---
+
+## Core Capabilities
+
+- **Guarded Multi-Language Refactoring (`rename`, `extract-function`, `move-symbol`)**: Multi-language Tree-sitter AST parsing across Python, JavaScript, and TypeScript, binary-mode byte span replacements, and automated MAP → WARN → SNAPSHOT → ACT → VERIFY lifecycle.
+- **Transitive Blast-Radius & Dynamic Warning**: `networkx` call graphs map dependencies, flagging un-rewritable runtime references (e.g., `getattr()`, dictionary bracket access) and historical repeat offenders before making changes.
+- **Scalable Dual-Strategy Snapshots**: Fast, zero-copy Git throwaway refs (`refs/refactor-guard/*`) using isolated index files, with full Windows read-only git object resilience (`0o444`) and directory-copy fallback.
+- **Self-Healing with AI Guardrails**: Automated Gemini AI failure diagnosis with anti-hardcode heuristic detection and single bounded retry before rolling back.
+- **Minimal Patch Guard (`review-patch`)**: Automated patch quality gate that checks candidate diffs for hardcoding, test tampering, deleted assertions, logic bypasses, and scope explosion. Evaluates generalization via metamorphic probes. → [Full MPG Documentation](doc/MINIMAL_PATCH_GUARD.md)
+- **Persistent Refactor Ledger (`history`)**: Append-only audit trail (`.refactor-guard/ledger.jsonl`) tracking every operation, parameter, timestamp, and rollback, with CLI querying and pre-flight advisory warnings.
+- **Model Context Protocol (MCP) Server**: Complete suite of 16 FastMCP tools allowing coding assistants (Claude Desktop, Cursor, Cline, Windsurf, Antigravity) to safely refactor and verify patches autonomously.
 
 ---
 
