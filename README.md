@@ -9,6 +9,13 @@ fails. Supports **three operations** (`rename`, `extract-function`,
 and TypeScript, while `extract-function` and `move-symbol` target Python with
 strict fail-fast validation on unsupported extensions.
 
+> 📚 **Detailed Documentation**:
+> - [System Architecture](doc/ARCHITECTURE.md)
+> - [CLI Reference Manual](doc/CLI_REFERENCE.md)
+> - [Minimal Patch Guard (MPG) Deep Dive](doc/MINIMAL_PATCH_GUARD.md)
+> - [MCP Agentic Integration Guide](doc/MCP_INTEGRATION_GUIDE.md)
+> - [Snapshot Engine & Audit Ledger](doc/SNAPSHOT_AND_LEDGER.md)
+
 ---
 
 ## How it works (5 steps)
