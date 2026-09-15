@@ -46,8 +46,14 @@ def review_patch(*, repo_root: str, base_ref: str = "HEAD",
     """
     policy = policy or _policy_mod.load_policy(repo_root)
     opts = models.ReviewOptions(
-        repo_root=repo_root, base_ref=base_ref,
-        output_format=output_format,
+        repo_root=repo_root, base_ref=base_ref, test_cmd=test_cmd,
+        strict_minimality=strict_minimality,
+        max_files_changed=max_files_changed,
+        max_lines_changed=max_lines_changed,
+        require_approval=require_approval,
+        run_generalization=run_generalization,
+        skip_generalization=skip_generalization,
+        operation=operation, output_format=output_format,
     )
     opts = _policy_mod.resolve_options(policy, opts)
 
