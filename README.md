@@ -2,12 +2,9 @@
 
 **Samsung PRISM Hackathon — Agentic Code Intelligence**
 
-A refactoring safety harness that detects stale references across a codebase
-before, during, and after a change — with automatic rollback when verification
-fails. Supports **three operations** (`rename`, `extract-function`,
-`move-symbol`) with Tree-sitter parsing: `rename` works across Python, JavaScript,
-and TypeScript, while `extract-function` and `move-symbol` target Python with
-strict fail-fast validation on unsupported extensions.
+A multi-language refactoring safety harness that detects stale references across a codebase before, during, and after a change — with automatic rollback when verification fails, persistent audit history, and an automated patch quality gate (**Minimal Patch Guard**).
+
+Supports **three refactoring operations** (`rename`, `extract-function`, `move-symbol`) across **three syntaxes** (Python, JavaScript, TypeScript) using **Tree-sitter** AST parsing, alongside patch verification (`review-patch`) and refactoring ledger inspection (`history`).
 
 > 📚 **Detailed Documentation**:
 > - [System Architecture](doc/ARCHITECTURE.md)
@@ -20,62 +17,138 @@ strict fail-fast validation on unsupported extensions.
 
 ## How it works (5 steps)
 
-| Step | Name      | What happens                                                                |
-|------|-----------|-----------------------------------------------------------------------------|
-| 1    | **MAP**   | Scans the repo for references with Tree-sitter, split into _static_ (calls, imports, definitions, member access) and _dynamic-risk_ (name in a string). Surfaces prior successful refactor runs (if any). |
-| 2    | **WARN**  | Prints dynamic-risk files **before anything changes**. Surfaces prior failure history and highlights repeat-offender dynamic-risk files (advisory only; non-blocking). |
-| 3    | **SNAPSHOT** | Scalable backup: zero-copy Git snapshot via throwaway refs (`refs/refactor-guard/*`) or directory copy excluding large/irrelevant directories. Transparent to CLI with identical signatures. |
-| 4    | **ACT**   | Applies the operation (Tree-sitter AST byte-range span rename in binary mode preserving comments/docstrings/strings; block extraction; symbol move with import rewrites). |
-| 5    | **VERIFY** | Runs the target repo's test suite. If tests pass → keep. If they fail → **auto-rollback** from the snapshot and print a diagnosis pointing at the dynamic-risk file. Records outcome in ledger. |
+Every refactoring operation runs through an automated safety harness orchestrated by `src/main.py`:
 
-### Supported languages & Operations
+| Step | Name | What happens |
+|---|---|---|
+| 1 | **MAP** | Scans the repo for references with Tree-sitter, split into _static_ (calls, imports, definitions, member access) and _dynamic-risk_ (name in a string). Computes transitive blast radius via `networkx`. Surfaces prior successful refactor runs (if any). |
+| 2 | **WARN** | Prints dynamic-risk files **before anything changes** so you know what cannot be safely auto-rewritten. Surfaces advisory prior failure history and tags repeat-offender dynamic-risk files. |
+| 3 | **SNAPSHOT** | Zero-copy Git throwaway ref snapshot (`refs/refactor-guard/*`) using an isolated index, or directory copy fallback excluding large directories (`node_modules`, `venv`, etc.). Fully resilient to Windows read-only Git objects. |
+| 4 | **ACT** | Applies the edit (Tree-sitter AST byte-range span rename in binary mode, preserving comments, docstrings, and string literals without offset drift; AST block extraction; symbol move with cross-module import rewrites). |
+| 5 | **VERIFY** | Runs the target repo's test suite. If tests pass → keep change + log success to ledger. If tests fail → optional Gemini AI root-cause diagnosis + bounded retry → still failing → **auto-rollback** from snapshot and log failure to ledger. |
 
-Refactor Guard enforces language support per operation. While symbol renaming operates across multi-language codebases using Tree-sitter, AST-heavy transformations (`extract-function` and `move-symbol`) currently target Python. Unsupported file extensions fail fast with exit code 2.
+---
+
+## Supported Languages & Operations
+
+Refactor Guard enforces language support per operation. While symbol renaming operates across multi-language codebases using Tree-sitter AST spans, AST-heavy transformations (`extract-function` and `move-symbol`) target Python with strict fail-fast validation (exit code 2).
 
 | Operation | Python (`.py`) | JavaScript (`.js`) | TypeScript (`.ts`) | Details |
 |---|:---:|:---:|:---:|---|
 | **`rename`** | ✅ Supported | ✅ Supported | ✅ Supported | Multi-language AST byte-range span replacement and bracket-access detection via Tree-sitter |
-| **`extract-function`** | ✅ Supported | ❌ Not supported | ❌ Not supported | Requires Python AST variable flow analysis; unsupported extensions exit with code 2 |
-| **`move-symbol`** | ✅ Supported | ❌ Not supported | ❌ Not supported | Requires Python AST module analysis and import rewrites; unsupported extensions exit with code 2 |
+| **`extract-function`** | ✅ Supported | ❌ Excluded | ❌ Excluded | Python AST variable flow analysis (free vars → params, used assigns → returns); exits code 2 on others |
+| **`move-symbol`** | ✅ Supported | ❌ Excluded | ❌ Excluded | Python AST module analysis, cross-file import rewrites, and target file creation; exits code 2 on others |
+| **`review-patch`** | ✅ Full MPG | ✅ Static + Scope | ✅ Static + Scope | 11-phase Minimal Patch Guard review, test integrity, and metamorphic pure function probes |
 
-#### Grammar & ACT details for `rename`:
+### Grammar & AST Details for `rename`:
 
-| Extension | Grammar                | Static node types                                        | Dynamic-risk |
-|-----------|------------------------|----------------------------------------------------------|--------------|
-| `.py`     | tree-sitter-python     | `identifier`                                             | `string_content` |
-| `.js`     | tree-sitter-javascript | `identifier`, `property_identifier`, `shorthand_property_identifier` | `string_fragment` |
-| `.ts`     | tree-sitter-javascript | same as `.js`                                            | `string_fragment` |
+| Extension | Grammar | Static node types | Dynamic-risk node types |
+|---|---|---|---|
+| `.py` | tree-sitter-python | `identifier` | `string_content` |
+| `.js` | tree-sitter-javascript | `identifier`, `property_identifier`, `shorthand_property_identifier` | `string_fragment` |
+| `.ts` | tree-sitter-javascript | same as `.js` | `string_fragment` |
 
-- **AST Byte-Range Span Replacement**: Files are parsed via Tree-sitter, read and rewritten in binary mode (`open(..., 'rb')`/`'wb'`), replacing only verified AST static identifier byte offsets. Comments, docstrings, string literals, and surrounding UTF-8/emojis are preserved byte-for-byte without offset drift.
-- **Span Validation & Parse Error Fallback**: Target spans are asserted against `old_symbol` bytes before replacement (triggering a fresh re-scan on mismatch). If Tree-sitter encounters a syntax error (`tree.root_node.has_error`), it logs a warning and falls back to word-boundary regex for that file only.
+For example, `getattr(mathutils, "compute_total")` (Python) and `mathutils["computeTotal"](items)` (JavaScript) are both flagged as **dynamic-risk**: the name is embedded in a string literal and a plain find-and-replace could never safely update it without runtime evaluation.
 
-For example, `getattr(mathutils, "compute_total")` (Python) and
-`mathutils["computeTotal"](items)` (JavaScript) are both flagged as
-dynamic-risk: the name is embedded in a string literal and a plain
-find-and-replace could never update it.
-
-### Snapshot & Rollback Architecture
-
-Refactor Guard provides a scalable dual-strategy backup system in `src/snapshot.py` with near-instant rollback and zero disk bloat:
-
-1. **Git Repositories (Fast Zero-Copy Snapshot)**:
-   - **Isolated Index**: All git index staging and tree writing operations strictly use a separate temporary index file via the `GIT_INDEX_FILE` environment variable. The developer's real `.git/index` is never read from, written to, or altered.
-   - **Seeded Index (Subdirectory Isolation)**: When `repo_root` is a subdirectory within a git repository, the temporary index is pre-populated via `git read-tree HEAD` before staging `repo_root` (`git add -A -- .`). This ensures files outside `repo_root` are preserved in the commit tree.
-   - **Pathspec-Scoped Restore**: Rollback is strictly restricted to `repo_root` via `git checkout-index -f -z --stdin`, and newly created untracked files are cleaned up without touching or modifying any files outside `repo_root`.
-   - **Zero-Commit Repositories**: Freshly `git init`'d repositories with no commits yet are detected via `git rev-parse --verify HEAD`; the parent flag (`-p HEAD`) and `read-tree` are omitted gracefully.
-   - **Gitignored Source File Fallback**: If `repo_root` contains gitignored `.py`, `.js`, or `.ts` source files that git would not track, Refactor Guard automatically falls back to a directory copy snapshot so uncommitted/ignored code is never lost.
-   - **Crash Recovery & Stale Ref Cleanup**: Orphaned `refs/refactor-guard/*` refs left by interrupted runs are cleaned up automatically at startup via `clean_stale_snapshots()` and on process exit via `atexit`.
-
-2. **Non-Git Repositories (Directory Copy Fallback)**:
-   - Uses `shutil.copytree` to back up files into a temporary directory.
-   - Automatically excludes large, non-source directories (`node_modules`, `.git`, `venv`, `.venv`, `env`, `__pycache__`, `.pytest_cache`, `.mypy_cache`) to minimize snapshot overhead and disk usage.
-
-3. **CLI & Pipeline Transparency**:
-   - The dual-strategy snapshot mechanism is completely transparent to the rest of Refactor Guard. Public function signatures (`create_snapshot(repo_root: str) -> str`, `restore_snapshot(backup_path: str, repo_root: str) -> None`, `cleanup_snapshot(backup_path: str) -> None`) remain strictly identical regardless of whether Git or directory copy is selected.
+- **AST Byte-Range Span Replacement**: Files are parsed via Tree-sitter, read and rewritten in binary mode (`rb`/`wb`), replacing only verified AST static identifier byte offsets. Comments, docstrings, string literals, and surrounding UTF-8/emojis are preserved byte-for-byte.
+- **Span Validation & Fallback**: Target spans are asserted against `old_symbol` bytes before replacement. If Tree-sitter encounters a syntax error (`root_node.has_error`), it logs a warning and falls back to word-boundary regex for that file only.
 
 ---
 
-## Setup
+## Snapshot & Rollback Architecture
+
+Refactor Guard provides a scalable dual-strategy backup system in `src/snapshot.py`:
+
+1. **Git Repositories (Fast Zero-Copy Snapshot)**:
+   - **Isolated Index**: All staging and tree operations strictly use a separate temporary index file via `GIT_INDEX_FILE`. The developer's real `.git/index` is **never modified**.
+   - **Seeded Index (Subdirectory Isolation)**: When `repo_root` is a subdirectory within a git repository, the temporary index is pre-populated via `git read-tree HEAD` before staging `repo_root`. This ensures files outside `repo_root` are preserved byte-for-byte.
+   - **Pathspec-Scoped Restore**: Rollback is strictly restricted to `repo_root` via `git checkout-index -f -z --stdin`, and newly created untracked files are cleaned up without touching files outside `repo_root`.
+   - **Zero-Commit Repositories**: Freshly `git init`'d repositories with no commits yet are detected via `git rev-parse --verify HEAD`; parent flag (`-p HEAD`) and `read-tree` are omitted gracefully.
+   - **Gitignored Source File Fallback**: If `repo_root` contains gitignored `.py`, `.js`, or `.ts` source files that git would not track, Refactor Guard automatically falls back to a directory copy snapshot so uncommitted code is never lost.
+   - **Windows Read-Only Resilience**: Loose git object files in `.git/objects/` are stored with read-only permissions (`0o444`). Refactor Guard implements `_force_remove_tree` and `_force_remove_file` with `stat.S_IWRITE` clearing and exponential-backoff retries to avoid `PermissionError` (WinError 5) during restore or cleanup.
+
+2. **Non-Git Repositories (Directory Copy Fallback)**:
+   - Uses `shutil.copytree` to back up files into a temporary directory.
+   - Automatically excludes large, non-source directories (`node_modules`, `venv`, `.venv`, `env`, `__pycache__`, `.pytest_cache`, `.mypy_cache`) to minimize snapshot overhead and disk bloat.
+
+3. **Pipeline Transparency**:
+   - The dual-strategy snapshot mechanism is completely transparent. Public signatures (`create_snapshot`, `restore_snapshot`, `cleanup_snapshot`) remain identical regardless of whether Git or directory copy is selected.
+
+---
+
+## Minimal Patch Guard (MPG) (`review-patch`)
+
+The **Minimal Patch Guard** is an automated review pipeline that detects over-fit, lazy, or dangerous patches produced by AI coding agents or human contributors before they are merged.
+
+### What MPG Detects:
+- **Hard-coded outputs & test-specific branches** (`MPG-003`): `if input == "exact_test_case": return expected`.
+- **Test weakening & deletion** (`MPG-005`): Tests marked `skip`/`xfail`, removed assertions, deleted test functions, or assertions commented out.
+- **Removed input dependencies** (`MPG-004`): Functions no longer using their arguments, returning dummy constants.
+- **Exception suppression & logic bypass** (`MPG-002`, `MPG-006`): Blind `try/except: pass` blocks, early returns bypassing core logic.
+- **Scope expansion & unrelated changes** (`MPG-001`, `MPG-008`): Modifying files or symbols unrelated to the declared operation.
+- **Regression verification**: Compares baseline vs candidate test matrices (distinguishing new failures from pre-existing ones).
+- **Metamorphic & differential probes**: Evaluates changed pure functions against canonical edge cases in an isolated subprocess.
+
+### Patch Review CLI Options:
+```bash
+# Review current working tree against git HEAD with test verification
+python -m src.main review-patch --repo-root /path/to/project
+
+# Fast pre-commit check (skipping test suite execution)
+python -m src.main review-patch --repo-root /path/to/project --test-cmd ""
+
+# Review against a specific git ref or base directory (without git)
+python -m src.main review-patch --repo-root /path/to/project --base-ref HEAD~1
+python -m src.main review-patch --repo-root /path/to/cand --base-ref /path/to/base
+
+# Enforce strict scope minimality and maximum file/line caps
+python -m src.main review-patch --repo-root /path/to/project \
+  --strict-minimality --max-files-changed 5 --max-lines-changed 100
+
+# Run generalization probes across changed pure functions
+python -m src.main review-patch --repo-root /path/to/project --run-generalization
+
+# Output structured JSON for automated pipelines & agents
+python -m src.main review-patch --repo-root /path/to/project --output-format json
+```
+
+### Exit Codes:
+- `0`: Patch **Accepted** or **Warning** (clean or minor advisory findings).
+- `1`: **Requires Approval** (risky findings detected or new regressions found).
+- `2`: **Rejected** (critical findings, test weakening, or usage error).
+
+---
+
+## Refactor Ledger & History (`.refactor-guard/ledger.jsonl`)
+
+Refactor Guard maintains a persistent audit trail of every completed refactor operation in `<repo_root>/.refactor-guard/ledger.jsonl`:
+
+- **Storage & Isolation**: Stored as newline-delimited JSON (JSONL). The `.refactor-guard/` directory is automatically gitignored and excluded from snapshots.
+- **Fail-Soft Persistence**: Writes occur strictly after rollback/cleanup completes. Any ledger I/O errors are caught fail-soft and never disrupt or alter the refactor's exit code.
+- **Pre-Flight Advisory Surfacing (STEP 1 & STEP 2)**:
+  - **STEP 1 (MAP)**: Surfaces prior successful operations concisely (`Note: this symbol was previously renamed successfully on <date>.`).
+  - **STEP 2 (WARN)**: If prior rolled-back attempts exist for the same operation and symbol, prints a formatted `PRIOR HISTORY` block with previous failure counts, dates, and implicated dynamic-risk files.
+  - **Repeat Offender Highlighting**: Any currently flagged dynamic-risk file that contributed to a prior rollback is tagged as a `(REPEAT OFFENDER — implicated in prior rollback)`.
+  - **Advisory Only**: Prior history warnings never abort, block, prompt, or alter execution flow or exit codes.
+
+### Inspect History via CLI (`history`):
+```bash
+# View all refactor history for a repository
+python -m src.main history --repo-root /path/to/project
+
+# Filter history for a specific symbol
+python -m src.main history --repo-root /path/to/project --symbol compute_total
+
+# Show only the last 5 records
+python -m src.main history --repo-root /path/to/project --limit 5
+
+# Output records as raw JSON for programmatic tools
+python -m src.main history --repo-root /path/to/project --json
+```
+
+---
+
+## Setup & Installation
 
 ```bash
 cd refactor-guard
@@ -85,7 +158,7 @@ python -m venv venv
 source venv/bin/activate   # Linux/Mac
 venv\Scripts\activate      # Windows
 
-# Install dependencies (pytest + tree-sitter + grammars)
+# Install dependencies (pytest + tree-sitter + grammars + FastMCP)
 pip install -r requirements.txt
 
 # Node.js is only needed for the JavaScript sample/demo
@@ -104,16 +177,15 @@ export GEMINI_API_KEY="your-gemini-api-key"
 export GEMINI_MODEL="gemini-3.6-flash"
 ```
 
-These can also be placed in a `.env` file in the project root:
-- **Graceful Fallback**: If `GEMINI_API_KEY` is missing, or if the configured `GEMINI_MODEL` is unavailable or deprecated (e.g. 404/not found), Refactor Guard logs a clear warning, skips AI diagnosis and retry, and proceeds immediately to a safe rollback without crashing or raising.
-- **Anti-Hardcode Guard**: System instructions direct the model to propose general fixes rather than narrow workarounds. Responses are scanned for hardcoding patterns (e.g. `just return`, `hardcode`, `special case`), displaying a warning (`⚠ This suggested fix may be overly specific...`) when detected.
-- **Bounded Retry**: If a diagnosis is generated, Refactor Guard re-runs the project test suite exactly once. If tests pass, the change is kept; if tests still fail, the repository is automatically rolled back.
+- **Graceful Fallback**: If `GEMINI_API_KEY` is missing, or if the configured `GEMINI_MODEL` is unavailable or deprecated (404), Refactor Guard logs a clear warning, skips AI diagnosis and retry, and proceeds immediately to a safe rollback.
+- **Anti-Hardcode Guard**: Responses are scanned for hardcoding patterns (e.g. `just return`, `hardcode`, `special case`), displaying a warning (`⚠ This suggested fix may be overly specific...`) when detected.
+- **Bounded Retry**: Re-runs the test suite exactly once. If tests pass, change is kept; if tests still fail, auto-rollback is executed.
 
 ---
 
 ## Usage
 
-### Rename a symbol (any supported language)
+### Rename a symbol (Python, JavaScript, TypeScript)
 
 ```bash
 python -m src.main rename \
@@ -138,13 +210,10 @@ python -m src.main extract-function \
 ```
 
 The tool derives the new function automatically:
-- **parameters** = free variables used but not defined in the block
-  (excluding builtins and module-level names);
-- **return values** = variables assigned in the block that the enclosing
-  function still uses afterwards (returned as a tuple).
+- **parameters** = free variables used but not defined in the block (excluding builtins and module-level names);
+- **return values** = variables assigned in the block that the enclosing function still uses afterwards (returned as a tuple).
 
 So lines 30-31 of `describe_items` become:
-
 ```python
 def _build_summary_and_count(items):
     summary = build_report(items)
@@ -168,14 +237,11 @@ python -m src.main move-symbol \
   # --dry-run                                  # Optional: simulate without changes
 ```
 
-This removes the definition from the source, creates/extends the target file
-with an import of whatever module-level names the moved code depended on, and
-rewrites every static reference (`from pkg.mathutils import build_report` →
-new module; `mathutils.build_report(...)` → bare `build_report(...)` + import).
+This removes the definition from the source, creates/extends the target file with an import of whatever module-level names the moved code depended on, and rewrites every static reference (`from pkg.mathutils import build_report` → new module; `mathutils.build_report(...)` → bare `build_report(...)` + import).
 
 ### Dry-Run Simulation (`--dry-run`)
 
-Add `--dry-run` to any subcommand (`rename`, `extract-function`, `move-symbol`) to:
+Add `--dry-run` to any refactoring subcommand (`rename`, `extract-function`, `move-symbol`) to:
 - Run **STEP 1: MAP** (static references, blast radius, AST parameter flow)
 - Run **STEP 2: WARN** (flag dynamic string risks, prior history, and side effects)
 - Skip **SNAPSHOT**, **ACT**, and **VERIFY** (no files edited, no tests run, no ledger record appended)
@@ -183,87 +249,11 @@ Add `--dry-run` to any subcommand (`rename`, `extract-function`, `move-symbol`) 
 
 ---
 
-## Refactor Ledger & History (`.refactor-guard/ledger.jsonl`)
+## Demos: Run Included Scenarios
 
-Refactor Guard maintains a persistent audit trail of every completed refactor operation in `<repo_root>/.refactor-guard/ledger.jsonl`:
-
-- **Storage & Isolation**: Stored as newline-delimited JSON (JSONL). The `.refactor-guard/` directory is automatically gitignored and excluded from snapshots.
-- **Fail-Soft Persistence**: Writes occur strictly after rollback/cleanup completes. Any ledger I/O errors are caught fail-soft and never disrupt or alter the refactor's exit code.
-- **Pre-Flight Advisory Surfacing (STEP 1 & STEP 2)**:
-  - **STEP 1 (MAP)**: Surfaces prior successful operations concisely (`Note: this symbol was previously renamed successfully on <date>.`).
-  - **STEP 2 (WARN)**: If prior rolled-back attempts exist for the same operation and symbol, prints a formatted `PRIOR HISTORY` block with previous failure counts, dates, and implicated dynamic-risk files.
-  - **Repeat Offender Highlighting**: Any currently flagged dynamic-risk file that contributed to a prior rollback is tagged as a `(REPEAT OFFENDER — implicated in prior rollback)`.
-  - **Advisory Only**: Prior history warnings never abort, block, prompt, or alter execution flow or exit codes.
-
-### Inspect History via CLI (`history`)
-
-```bash
-# View all refactor history for a repository
-python -m src.main history --repo-root /path/to/project
-
-# Filter history for a specific symbol
-python -m src.main history --repo-root /path/to/project --symbol compute_total
-
-# Show only the last 5 records
-python -m src.main history --repo-root /path/to/project --limit 5
-
-# Output records as raw JSON for programmatic tools
-python -m src.main history --repo-root /path/to/project --json
-```
-
----
-
-## Minimal Patch Guard (MPG) (`review-patch`)
-
-The **Minimal Patch Guard** is an automated review pipeline that detects over-fit, lazy, or dangerous patches produced by AI coding agents or human contributors before they are merged.
-
-### What MPG detects
-- **Hard-coded outputs & test-specific branches**: (e.g. `if input == "exact_test_case": return expected`).
-- **Test weakening & deletion**: Tests marked `skip`/`xfail`, removed assertions, or deleted test methods.
-- **Removed input dependencies**: Functions no longer using their arguments or computing dummy constants.
-- **Exception suppression & logic bypass**: Blind `try/except: pass` blocks, premature returns, disabled checks.
-- **Scope expansion & unrelated changes**: Touching files or symbols unrelated to the declared operation.
-- **Regression verification**: Compares baseline vs candidate test matrices (distinguishing new failures from pre-existing ones).
-- **Metamorphic & differential probes**: Evaluates changed pure functions against edge cases.
-
-### Inspect Patches via CLI (`review-patch`)
-
-```bash
-# Review current working tree against git HEAD with test verification
-python -m src.main review-patch --repo-root /path/to/project
-
-# Review against a specific git ref or base directory (without git)
-python -m src.main review-patch --repo-root /path/to/project --base-ref HEAD~1
-python -m src.main review-patch --repo-root /path/to/cand --base-ref /path/to/base
-
-# Skip test verification during fast review
-python -m src.main review-patch --repo-root /path/to/project --test-cmd ""
-
-# Enforce strict scope minimality and maximum file/line caps
-python -m src.main review-patch --repo-root /path/to/project \
-  --strict-minimality --max-files-changed 5 --max-lines-changed 100
-
-# Run generalization probes across changed pure functions
-python -m src.main review-patch --repo-root /path/to/project --run-generalization
-
-# Output structured JSON for automated pipelines & agents
-python -m src.main review-patch --repo-root /path/to/project --output-format json
-```
-
-### Exit Codes
-- `0`: Patch **Accepted** or **Warning** (clean or minor advisory findings).
-- `1`: **Requires Approval** (risky findings detected or new regressions found).
-- `2`: **Rejected** (critical findings, test weakening, or usage error).
-
----
-
-## Demos: run the included sample repos
-
-`python demo_run.py` runs all five scenarios on fresh copies and prints a
-summary. Individually:
+`python demo_run.py` runs all five scenarios on fresh copies and prints a summary. Individually:
 
 ### 1. Python rename — no dynamic risk (should succeed)
-
 ```bash
 cp -r tests/sample_repo /tmp/demo1
 python -m src.main rename \
@@ -272,21 +262,15 @@ python -m src.main rename \
 ```
 
 ### 2. Python rename — dynamic risk (should fail, auto-rollback)
-
 ```bash
 cp -r tests/sample_repo /tmp/demo2
 python -m src.main rename \
   --repo-root /tmp/demo2 --symbol compute_total --to sum_items \
   --test-cmd "pytest -q"
 ```
-
-Static files are renamed, but `pkg/dynamic_caller.py` calls
-`getattr(mathutils, "compute_total")` — left untouched. Tests fail with
-`AttributeError`, the repo is auto-rolled back, and the diagnosis points at
-`pkg/dynamic_caller.py`.
+Static files are renamed, but `pkg/dynamic_caller.py` calls `getattr(mathutils, "compute_total")` — left untouched. Tests fail with `AttributeError`, the repo is auto-rolled back, and the diagnosis points at `pkg/dynamic_caller.py`.
 
 ### 3. Extract-function (should succeed)
-
 ```bash
 cp -r tests/sample_repo /tmp/demo3
 python -m src.main extract-function \
@@ -296,7 +280,6 @@ python -m src.main extract-function \
 ```
 
 ### 4. Move-symbol (should succeed)
-
 ```bash
 cp -r tests/sample_repo /tmp/demo4
 python -m src.main move-symbol \
@@ -306,52 +289,46 @@ python -m src.main move-symbol \
 ```
 
 ### 5. JavaScript rename — dynamic risk (should fail, auto-rollback)
-
 ```bash
 cp -r tests/sample_repo_js /tmp/demo5
 python -m src.main rename \
   --repo-root /tmp/demo5 --symbol computeTotal --to sumItems \
   --test-cmd "node --test tests/*.test.js"
 ```
-
-`pkg/dynamic_call.js` calls `mathutils["computeTotal"](items)` from inside a
-string literal: the static uses are renamed, the dynamic one is not, Node tests
-fail with `TypeError: mathutils.computeTotal is not a function`, the repo is
-rolled back, and the diagnosis points at `pkg/dynamic_call.js`.
+`pkg/dynamic_call.js` calls `mathutils["computeTotal"](items)` from inside a string literal: the static uses are renamed, the dynamic one is not, Node tests fail with `TypeError: mathutils.computeTotal is not a function`, the repo is rolled back, and the diagnosis points at `pkg/dynamic_call.js`.
 
 ---
 
-## Run the unit tests
+## Run the Unit Tests
 
 ```bash
+# Run all unit tests (147 tests passing)
 python -m pytest tests/ -v
 ```
 
-Coverage includes 137 tests across multi-language scanning (Python/JS/TS), AST span replacement with comment/docstring preservation, dual-strategy snapshots, extract-function, move-symbol, failure diagnosis, self-heal anti-hardcode guards, FastMCP server tools, and the persistent refactor ledger.
+Coverage includes:
+- Multi-language AST scanning (Python/JS/TS) & byte-range span replacements
+- Extract-function parameter/return data-flow inference
+- Move-symbol import graph rewrites
+- Scalable dual-strategy snapshot rollback (Git index isolation & Windows read-only object resilience)
+- Persistent audit ledger & history inspection
+- Anti-hardcoding guards & model availability fallback
+- Minimal Patch Guard 11-phase analysis, static rules, test integrity, and metamorphic probes
+- FastMCP tool suite integration
 
 ---
 
-## MCP server (agentic IDE integration)
+## MCP Server (Agentic IDE Integration)
 
-Refactor Guard exposes its safe refactoring pipeline as **Model Context Protocol (MCP) tools** for AI coding assistants (Claude Desktop, Cursor, Cline, etc.).
+Refactor Guard exposes its safe refactoring pipeline and patch review gate as **Model Context Protocol (MCP) tools** for AI coding assistants (Claude Desktop, Cursor, Cline, Antigravity, Windsurf).
 
-### How to run
-
-1. Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-2. Start the MCP server (over stdio):
-
+### How to Run
 ```bash
 python -m src.mcp_server
 ```
 
-### MCP IDE registration
-
-For Claude Desktop, Cursor, or Cline, add the server to your MCP configuration:
+### Client Configuration
+Add the server to your client's MCP configuration (`claude_desktop_config.json`, `.cursor/mcp.json`, etc.):
 
 ```json
 {
@@ -365,7 +342,7 @@ For Claude Desktop, Cursor, or Cline, add the server to your MCP configuration:
 }
 ```
 
-Once registered, the AI assistant has access to the following tools:
+### Available Tools:
 
 #### Core Refactoring Tools
 - `refactor_guard_rename(repo_root, symbol, to, test_cmd, dry_run=False)` — Safely rename a symbol across the project with blast radius analysis, dynamic warning checks, automated test verification, and snapshot rollback.
@@ -386,10 +363,17 @@ Once registered, the AI assistant has access to the following tools:
 
 ---
 
-## Project structure
+## Project Structure
 
 ```
 refactor-guard/
+├── doc/                      # Comprehensive technical documentation manuals
+│   ├── README.md             # Documentation index & role navigation
+│   ├── ARCHITECTURE.md       # System architecture, pipeline, & data flow
+│   ├── CLI_REFERENCE.md      # Command-line flags, options, & exit codes
+│   ├── MINIMAL_PATCH_GUARD.md# MPG rules (001-008), scoring, & metamorphic engine
+│   ├── MCP_INTEGRATION_GUIDE.md # MCP client setup, tool schemas, & prompts
+│   └── SNAPSHOT_AND_LEDGER.md# Git isolated snapshots, Windows resilience, & ledger
 ├── src/
 │   ├── __init__.py
 │   ├── dependency_graph.py   # MAP — Tree-sitter multi-language scanning
@@ -429,6 +413,8 @@ refactor-guard/
 ├── test_reports/             # MPG verification run reports
 ├── demo_run.py               # runs all 5 demo scenarios
 ├── requirements.txt
+├── pytest.ini
+├── LICENSE                   # MIT License
 ├── .gitignore
 └── README.md
 ```
@@ -437,4 +423,6 @@ refactor-guard/
 
 ## License
 
-Hackathon / educational use.
+This project is licensed under the [MIT License](LICENSE).
+
+Developed for the **Samsung PRISM Hackathon — Agentic Code Intelligence**.
