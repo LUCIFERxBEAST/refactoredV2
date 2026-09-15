@@ -1,0 +1,1 @@
+"""Sample package for Refactor Guard demo."""

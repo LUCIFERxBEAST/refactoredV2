@@ -1,0 +1,8 @@
+=== SELF-HEAL LIVE PROBE (gemini-3.6-flash) ===
+
+model='gemini-3.6-flash':
+**(a)** The failure occurred because the automated refactoring tool updated the `compute_total` function definition in `pkg.mathutils` but missed the hardcoded string literal inside the dynamic `getattr()` call in `pkg/dynamic_caller.py`. **(b)** To fix this, manually update line 10 of `pkg/dynamic_caller.py` to pass the new function name string to `getattr` (e.g., `fn = getattr(mathutils, "<new_symbol_name>")`).
+
+model='gemini-2.0-flash' -> ERROR: 404 This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.6-flash for the latest features and improvements. We recommend you to use the Interactions API.
+
+=== END LIVE PROBE ===

@@ -1,0 +1,453 @@
+
+======================================================================
+DEMO: rename: build_report → generate_report (should SUCCEED)
+======================================================================
+============================================================
+  STEP 1: MAP — scanning for references to 'build_report'
+============================================================
+  Scanning: C:\Users\pondh\Downloads\REFACTOR-GAURD\_demo1
+  Static references found in:
+    - pkg/mathutils.py
+    - tests/test_reporter.py
+  Dynamic-risk references found in:
+    (none)
+  Blast radius — files transitively affected:
+    3 file(s) transitively affected
+    - pkg/mathutils.py
+    - pkg/reporter.py
+    - tests/test_reporter.py
+
+============================================================
+  STEP 2: WARN — dynamic-risk check (nothing changed yet)
+============================================================
+  No dynamic-risk references detected — safe to proceed.
+
+============================================================
+  STEP 3: SNAPSHOT — backing up repo before editing
+============================================================
+  Backup created at: C:\Users\pondh\AppData\Local\Temp\refactor_guard_backup_6taien2g\_demo1
+
+============================================================
+  STEP 4: ACT — renaming 'build_report' → 'generate_report' in static files
+============================================================
+    pkg/mathutils.py: 3 replacement(s)
+    tests/test_reporter.py: 1 replacement(s)
+  Total replacements across 2 file(s): 4
+
+============================================================
+  STEP 5: VERIFY — running test suite: pytest -q
+============================================================
+  ......                                                                   [100%]
+  6 passed in 0.07s
+  Exit code: 0
+
+============================================================
+  SUCCESS ✓ — All tests pass. Change is kept.
+============================================================
+  Backup deleted: C:\Users\pondh\AppData\Local\Temp\refactor_guard_backup_6taien2g\_demo1
+
+→ exit code 0 (expected 0) ✓
+
+======================================================================
+DEMO: rename: compute_total → sum_items (should FAIL + rollback)
+======================================================================
+============================================================
+  STEP 1: MAP — scanning for references to 'compute_total'
+============================================================
+  Scanning: C:\Users\pondh\Downloads\REFACTOR-GAURD\_demo2
+  Static references found in:
+    - pkg/mathutils.py
+    - pkg/reporter.py
+    - tests/test_reporter.py
+  Dynamic-risk references found in:
+    - pkg/dynamic_caller.py
+  Blast radius — files transitively affected:
+    3 file(s) transitively affected
+    - pkg/mathutils.py
+    - pkg/reporter.py
+    - tests/test_reporter.py
+
+============================================================
+  STEP 2: WARN — dynamic-risk check (nothing changed yet)
+============================================================
+  ⚠ WARNING: 'compute_total' appears inside string literals in:
+    - pkg/dynamic_caller.py
+  These files use the symbol dynamically (e.g. getattr(obj, 'name')).
+  They will NOT be renamed automatically.
+
+============================================================
+  STEP 3: SNAPSHOT — backing up repo before editing
+============================================================
+  Backup created at: C:\Users\pondh\AppData\Local\Temp\refactor_guard_backup_uo9kqnf6\_demo2
+
+============================================================
+  STEP 4: ACT — renaming 'compute_total' → 'sum_items' in static files
+============================================================
+    pkg/mathutils.py: 4 replacement(s)
+    pkg/reporter.py: 3 replacement(s)
+    tests/test_reporter.py: 1 replacement(s)
+  Total replacements across 3 file(s): 8
+
+============================================================
+  STEP 5: VERIFY — running test suite: pytest -q
+============================================================
+  FF....                                                                   [100%]
+  ================================== FAILURES ===================================
+  ___________________________ test_call_compute_total ___________________________
+  
+      def test_call_compute_total():
+  >       assert call_compute_total([1, 2, 3]) == 6
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  
+  ..\tests\sample_repo\tests\test_dynamic.py:6: 
+  _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+  
+  items = [1, 2, 3]
+  
+      def call_compute_total(items):
+          from . import mathutils
+  >       fn = getattr(mathutils, "compute_total")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  E       AttributeError: module 'pkg.mathutils' has no attribute 'compute_total'
+  
+  pkg\dynamic_caller.py:10: AttributeError
+  ________________________ test_call_compute_total_empty ________________________
+  
+      def test_call_compute_total_empty():
+  >       assert call_compute_total([]) == 0
+                 ^^^^^^^^^^^^^^^^^^^^^^
+  
+  ..\tests\sample_repo\tests\test_dynamic.py:10: 
+  _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+  
+  items = []
+  
+      def call_compute_total(items):
+          from . import mathutils
+  >       fn = getattr(mathutils, "compute_total")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  E       AttributeError: module 'pkg.mathutils' has no attribute 'compute_total'
+  
+  pkg\dynamic_caller.py:10: AttributeError
+  =========================== short test summary info ===========================
+  FAILED tests/test_dynamic.py::test_call_compute_total - AttributeError: modul...
+  FAILED tests/test_dynamic.py::test_call_compute_total_empty - AttributeError:...
+  2 failed, 4 passed in 0.21s
+  Exit code: 1
+
+============================================================
+  === Self-Heal: AI Diagnosis ===
+============================================================
+  The root cause of the failure is that the automated refactoring tool renamed the `compute_total` function definition but skipped the hardcoded string literal `"compute_total"` used in the dynamic `getattr()` call in `pkg/dynamic_caller.py`. To fix this, manually update line 10 of `pkg/dynamic_caller.py` to pass the new symbol name string into `getattr` (e.g., `fn = getattr(mathutils, "<new_symbol_name>")`).
+
+  Retrying test suite exactly once…
+  FF....                                                                   [100%]
+  ================================== FAILURES ===================================
+  ___________________________ test_call_compute_total ___________________________
+  
+      def test_call_compute_total():
+  >       assert call_compute_total([1, 2, 3]) == 6
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  
+  ..\tests\sample_repo\tests\test_dynamic.py:6: 
+  _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+  
+  items = [1, 2, 3]
+  
+      def call_compute_total(items):
+          from . import mathutils
+  >       fn = getattr(mathutils, "compute_total")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  E       AttributeError: module 'pkg.mathutils' has no attribute 'compute_total'
+  
+  pkg\dynamic_caller.py:10: AttributeError
+  ________________________ test_call_compute_total_empty ________________________
+  
+      def test_call_compute_total_empty():
+  >       assert call_compute_total([]) == 0
+                 ^^^^^^^^^^^^^^^^^^^^^^
+  
+  ..\tests\sample_repo\tests\test_dynamic.py:10: 
+  _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+  
+  items = []
+  
+      def call_compute_total(items):
+          from . import mathutils
+  >       fn = getattr(mathutils, "compute_total")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  E       AttributeError: module 'pkg.mathutils' has no attribute 'compute_total'
+  
+  pkg\dynamic_caller.py:10: AttributeError
+  =========================== short test summary info ===========================
+  FAILED tests/test_dynamic.py::test_call_compute_total - AttributeError: modul...
+  FAILED tests/test_dynamic.py::test_call_compute_total_empty - AttributeError:...
+  2 failed, 4 passed in 0.15s
+  Exit code: 1
+
+============================================================
+  FAILURE ✗ — tests failed after the change. Rolling back…
+============================================================
+  Repo restored from snapshot.
+  Backup deleted.
+
+============================================================
+  DIAGNOSIS
+============================================================
+The test failures reference the renamed symbol 'compute_total':
+  - 'compute_total' is missing
+
+>>> Likely caused by the dynamic reference in:
+    pkg/dynamic_caller.py
+>>> The symbol name is used inside a string literal there (e.g. getattr(obj, 'symbol')), so it was deliberately not renamed and now points at code that no longer exists.
+
+→ exit code 1 (expected 1) ✓
+
+======================================================================
+DEMO: extract-function: describe_items block → _build_summary_and_count
+======================================================================
+============================================================
+  STEP 1: MAP — analyzing block 30-31 of pkg/mathutils.py
+============================================================
+  Block found inside function 'describe_items'
+  Extracting it into a new function named '_build_summary_and_count'
+  Derived parameters :  ['items']
+  Values passed back :  ['summary', 'count']
+
+============================================================
+  STEP 2: WARN — check before changing anything
+============================================================
+  The extracted function will return: summary, count
+  The block will be replaced with a call that unpacks that.
+  Only one file is edited; the test suite will confirm behavior.
+
+============================================================
+  STEP 3: SNAPSHOT — backing up repo before editing
+============================================================
+  Backup created at: C:\Users\pondh\AppData\Local\Temp\refactor_guard_backup_sbu0tfze\_demo3
+
+============================================================
+  STEP 4: ACT — extracting block to '_build_summary_and_count'
+============================================================
+    pkg/mathutils.py: extracted lines 30-31 → def _build_summary_and_count(…)
+
+============================================================
+  STEP 5: VERIFY — running test suite: pytest -q
+============================================================
+  ......                                                                   [100%]
+  6 passed in 0.10s
+  Exit code: 0
+
+============================================================
+  SUCCESS ✓ — All tests pass. Change is kept.
+============================================================
+  Backup deleted: C:\Users\pondh\AppData\Local\Temp\refactor_guard_backup_sbu0tfze\_demo3
+
+→ exit code 0 (expected 0) ✓
+
+======================================================================
+DEMO: move-symbol: build_report → pkg/reportbuilder.py
+======================================================================
+============================================================
+  STEP 1: MAP — scanning for references to 'build_report'
+============================================================
+  Static references found in:
+    - pkg/mathutils.py
+    - tests/test_reporter.py
+  Dynamic-risk references found in:
+    (none)
+  Blast radius — files transitively affected:
+    3 file(s) transitively affected
+    - pkg/mathutils.py
+    - pkg/reporter.py
+    - tests/test_reporter.py
+
+  Move plan: 'build_report' from pkg/mathutils.py → pkg/reportbuilder.py
+
+============================================================
+  STEP 2: WARN — dynamic-risk check (nothing changed yet)
+============================================================
+  No dynamic-risk references detected — safe to proceed.
+
+============================================================
+  STEP 3: SNAPSHOT — backing up repo before editing
+============================================================
+  Backup created at: C:\Users\pondh\AppData\Local\Temp\refactor_guard_backup_ondq0f8s\_demo4
+
+============================================================
+  STEP 4: ACT — moving 'build_report' to pkg/reportbuilder.py
+============================================================
+    pkg/mathutils.py: moved def build_report -> pkg/reportbuilder.py; re-imported it locally
+    pkg/reportbuilder.py: created/extended with def build_report
+    tests/test_reporter.py: rewritten references for build_report
+
+============================================================
+  STEP 5: VERIFY — running test suite: pytest -q
+============================================================
+  ......                                                                   [100%]
+  6 passed in 0.11s
+  Exit code: 0
+
+============================================================
+  SUCCESS ✓ — All tests pass. Change is kept.
+============================================================
+  Backup deleted: C:\Users\pondh\AppData\Local\Temp\refactor_guard_backup_ondq0f8s\_demo4
+
+→ exit code 0 (expected 0) ✓
+
+======================================================================
+DEMO: rename: computeTotal → sumItems in JS (should FAIL + rollback)
+======================================================================
+============================================================
+  STEP 1: MAP — scanning for references to 'computeTotal'
+============================================================
+  Scanning: C:\Users\pondh\Downloads\REFACTOR-GAURD\_demo5_js
+  Static references found in:
+    - pkg/mathutils.js
+    - pkg/reporter.js
+    - tests/test_reporter.test.js
+  Dynamic-risk references found in:
+    - pkg/dynamic_call.js
+  Blast radius — files transitively affected:
+    3 file(s) transitively affected
+    - pkg/mathutils.js
+    - pkg/reporter.js
+    - tests/test_reporter.test.js
+
+============================================================
+  STEP 2: WARN — dynamic-risk check (nothing changed yet)
+============================================================
+  ⚠ WARNING: 'computeTotal' appears inside string literals in:
+    - pkg/dynamic_call.js
+  These files access the symbol by name at runtime (e.g. obj['name'] — bracket-notation member access).
+  They will NOT be renamed automatically.
+
+============================================================
+  STEP 3: SNAPSHOT — backing up repo before editing
+============================================================
+  Backup created at: C:\Users\pondh\AppData\Local\Temp\refactor_guard_backup_rfi5wltc\_demo5_js
+
+============================================================
+  STEP 4: ACT — renaming 'computeTotal' → 'sumItems' in static files
+============================================================
+    pkg/mathutils.js: 5 replacement(s)
+    pkg/reporter.js: 2 replacement(s)
+    tests/test_reporter.test.js: 2 replacement(s)
+  Total replacements across 3 file(s): 9
+
+============================================================
+  STEP 5: VERIFY — running test suite: node --test tests/*.test.js
+============================================================
+  ✖ callComputeTotal sums items (2.6945ms)
+  ✖ callComputeTotal empty list (0.4446ms)
+  ✔ reportTotal sums items (3.7467ms)
+  ✔ buildReport builds a report (0.4635ms)
+  ✔ sumItems sums items (0.2704ms)
+  ℹ tests 5
+  ℹ suites 0
+  ℹ pass 3
+  ℹ fail 2
+  ℹ cancelled 0
+  ℹ skipped 0
+  ℹ todo 0
+  ℹ duration_ms 267.4335
+  
+  ✖ failing tests:
+  
+  test at tests\test_dynamic.test.js:6:1
+  ✖ callComputeTotal sums items (2.6945ms)
+    TypeError: mathutils.computeTotal is not a function
+        at callComputeTotal (C:\Users\pondh\Downloads\REFACTOR-GAURD\_demo5_js\pkg\dynamic_call.js:8:35)
+        at TestContext.<anonymous> (C:\Users\pondh\Downloads\REFACTOR-GAURD\_demo5_js\tests\test_dynamic.test.js:7:22)
+        at Test.runInAsyncScope (node:async_hooks:227:14)
+        at Test.run (node:internal/test_runner/test:1402:25)
+        at Test.start (node:internal/test_runner/test:1262:17)
+        at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17)
+  
+  test at tests\test_dynamic.test.js:10:1
+  ✖ callComputeTotal empty list (0.4446ms)
+    TypeError: mathutils.computeTotal is not a function
+        at callComputeTotal (C:\Users\pondh\Downloads\REFACTOR-GAURD\_demo5_js\pkg\dynamic_call.js:8:35)
+        at TestContext.<anonymous> (C:\Users\pondh\Downloads\REFACTOR-GAURD\_demo5_js\tests\test_dynamic.test.js:11:22)
+        at Test.runInAsyncScope (node:async_hooks:227:14)
+        at Test.run (node:internal/test_runner/test:1402:25)
+        at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+        at Test.postRun (node:internal/test_runner/test:1542:19)
+        at Test.run (node:internal/test_runner/test:1467:12)
+        at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+  Exit code: 1
+
+============================================================
+  === Self-Heal: AI Diagnosis ===
+============================================================
+  The test failed because the automated refactoring tool skipped updating `pkg/dynamic_call.js` due to its pre-flagged dynamic risk, leaving line 8 invoking the old `mathutils.computeTotal` property that no longer exists on the object. 
+  To fix this, manually update line 8 in `pkg/dynamic_call.js` to invoke the new renamed function on `mathutils` instead of `computeTotal`.
+
+  Retrying test suite exactly once…
+  ✖ callComputeTotal sums items (1.7295ms)
+  ✖ callComputeTotal empty list (0.3602ms)
+  ✔ reportTotal sums items (1.8679ms)
+  ✔ buildReport builds a report (0.5848ms)
+  ✔ sumItems sums items (0.3746ms)
+  ℹ tests 5
+  ℹ suites 0
+  ℹ pass 3
+  ℹ fail 2
+  ℹ cancelled 0
+  ℹ skipped 0
+  ℹ todo 0
+  ℹ duration_ms 244.0636
+  
+  ✖ failing tests:
+  
+  test at tests\test_dynamic.test.js:6:1
+  ✖ callComputeTotal sums items (1.7295ms)
+    TypeError: mathutils.computeTotal is not a function
+        at callComputeTotal (C:\Users\pondh\Downloads\REFACTOR-GAURD\_demo5_js\pkg\dynamic_call.js:8:35)
+        at TestContext.<anonymous> (C:\Users\pondh\Downloads\REFACTOR-GAURD\_demo5_js\tests\test_dynamic.test.js:7:22)
+        at Test.runInAsyncScope (node:async_hooks:227:14)
+        at Test.run (node:internal/test_runner/test:1402:25)
+        at Test.start (node:internal/test_runner/test:1262:17)
+        at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17)
+  
+  test at tests\test_dynamic.test.js:10:1
+  ✖ callComputeTotal empty list (0.3602ms)
+    TypeError: mathutils.computeTotal is not a function
+        at callComputeTotal (C:\Users\pondh\Downloads\REFACTOR-GAURD\_demo5_js\pkg\dynamic_call.js:8:35)
+        at TestContext.<anonymous> (C:\Users\pondh\Downloads\REFACTOR-GAURD\_demo5_js\tests\test_dynamic.test.js:11:22)
+        at Test.runInAsyncScope (node:async_hooks:227:14)
+        at Test.run (node:internal/test_runner/test:1402:25)
+        at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+        at Test.postRun (node:internal/test_runner/test:1542:19)
+        at Test.run (node:internal/test_runner/test:1467:12)
+        at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+  Exit code: 1
+
+============================================================
+  FAILURE ✗ — tests failed after the change. Rolling back…
+============================================================
+  Repo restored from snapshot.
+  Backup deleted.
+
+============================================================
+  DIAGNOSIS
+============================================================
+The test failures reference the renamed symbol 'computeTotal':
+  - 'mathutils.computeTotal' is missing
+
+>>> Likely caused by the dynamic reference in:
+    pkg/dynamic_call.js
+>>> The symbol name is used inside a string literal there (e.g. obj['symbol'] — bracket-notation member access), so it was deliberately not renamed and now points at code that no longer exists.
+
+→ exit code 1 (expected 1) ✓
+
+======================================================================
+DEMO SUMMARY
+======================================================================
+  ✓ PASS  demo1 rename build_report -> generate_report (success)
+  ✓ PASS  demo2 rename compute_total -> sum_items (rollback)
+  ✓ PASS  demo3 extract-function
+  ✓ PASS  demo4 move-symbol build_report -> pkg/reportbuilder.py
+  ✓ PASS  demo5 js rename computeTotal -> sumItems (rollback)
+
+ALL DEMOS PASS

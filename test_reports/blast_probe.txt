@@ -1,0 +1,10 @@
+=== BLAST RADIUS MULTI-HOP VERIFICATION ===
+Call graph (definitions -> callers):
+  build_report (pkg/a.py) <- wrap (pkg/b.py) <- top (pkg/c.py)
+  unrelated (pkg/d.py) is isolated (no imports)
+blast_radius(REPO, 'build_report') returned:
+  - pkg/a.py
+  - pkg/b.py
+  - pkg/c.py
+RESULT: PASS — multi-hop chain fully enumerated, unrelated d.py excluded
+blast_radius(REPO, 'unrelated') -> ['pkg/d.py'] (expect just itself)
