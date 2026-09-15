@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import pytest
@@ -6,10 +7,18 @@ from src.mcp_server import (
     refactor_guard_extract_function,
     refactor_guard_move_symbol,
     refactor_guard_history,
+    refactor_guard_review_patch,
+    refactor_guard_check_minimality,
+    refactor_guard_check_generalization,
+    refactor_guard_compare_runs,
     refactor_rename,
     refactor_extract_function,
     refactor_move_symbol,
     refactor_history,
+    refactor_review_patch,
+    refactor_check_minimality,
+    refactor_check_generalization,
+    refactor_compare_runs,
 )
 
 
@@ -168,6 +177,101 @@ def test_mcp_history(tmp_path):
     # 4. Test alias
     out_alias = refactor_history(repo_root=str(repo))
     assert "[SUCCESS]" in out_alias
+
+
+def test_mcp_review_patch_folder_base(tmp_path):
+    base = tmp_path / "base"
+    cand = tmp_path / "cand"
+    shutil.copytree(os.path.join(os.path.dirname(__file__), "sample_repo"), base)
+    shutil.copytree(base, cand)
+
+    out_json = refactor_guard_review_patch(
+        repo_root=str(cand),
+        base_ref=str(base),
+        test_cmd="",
+    )
+    data = json.loads(out_json)
+    assert data["decision"] in ("accept", "warn")
+    assert data["score"] >= 80
+
+    out_alias = refactor_review_patch(
+        repo_root=str(cand),
+        base_ref=str(base),
+        test_cmd="",
+    )
+    data_alias = json.loads(out_alias)
+    assert data_alias["decision"] == data["decision"]
+
+
+def test_mcp_check_minimality(tmp_path):
+    base = tmp_path / "base"
+    cand = tmp_path / "cand"
+    shutil.copytree(os.path.join(os.path.dirname(__file__), "sample_repo"), base)
+    shutil.copytree(base, cand)
+
+    (cand / "pkg" / "mathutils.py").write_text("# comment\n" + (base / "pkg" / "mathutils.py").read_text())
+
+    out_json = refactor_guard_check_minimality(
+        repo_root=str(cand),
+        base_ref=str(base),
+    )
+    data = json.loads(out_json)
+    assert "patch" in data
+    assert "findings" in data
+    assert data["decision"] in ("accept", "warn", "require_approval")
+
+    out_alias = refactor_check_minimality(
+        repo_root=str(cand),
+        base_ref=str(base),
+    )
+    data_alias = json.loads(out_alias)
+    assert "patch" in data_alias
+
+
+def test_mcp_check_generalization(tmp_path):
+    base = tmp_path / "base"
+    cand = tmp_path / "cand"
+    shutil.copytree(os.path.join(os.path.dirname(__file__), "sample_repo"), base)
+    shutil.copytree(base, cand)
+
+    out_json = refactor_guard_check_generalization(
+        repo_root=str(cand),
+        base_ref=str(base),
+        test_cmd="",
+    )
+    data = json.loads(out_json)
+    assert "generalization" in data
+
+    out_alias = refactor_check_generalization(
+        repo_root=str(cand),
+        base_ref=str(base),
+        test_cmd="",
+    )
+    data_alias = json.loads(out_alias)
+    assert "generalization" in data_alias
+
+
+def test_mcp_compare_runs(tmp_path):
+    base = tmp_path / "base"
+    cand = tmp_path / "cand"
+    shutil.copytree(os.path.join(os.path.dirname(__file__), "sample_repo"), base)
+    shutil.copytree(base, cand)
+
+    out_json = refactor_guard_compare_runs(
+        repo_root=str(cand),
+        base_ref=str(base),
+        test_cmd="",
+    )
+    data = json.loads(out_json)
+    assert "verification" in data
+
+    out_alias = refactor_compare_runs(
+        repo_root=str(cand),
+        base_ref=str(base),
+        test_cmd="",
+    )
+    data_alias = json.loads(out_alias)
+    assert "verification" in data_alias
 
 
 

@@ -15,16 +15,11 @@ strict fail-fast validation on unsupported extensions.
 
 | Step | Name      | What happens                                                                |
 |------|-----------|-----------------------------------------------------------------------------|
-| 1    | **MAP**   | Scans the repo for references with Tree-sitter, split into _static_ (calls, |
-|      |           | imports, definitions, member access) and _dynamic-risk_ (name in a string).  |
-| 2    | **WARN**  | Prints dynamic-risk files **before anything changes** so you know what can't |
-|      |           | be auto-rewritten.                                                           |
-| 3    | **SNAPSHOT** | Scalable backup: zero-copy Git snapshot via throwaway refs (`refs/refactor-guard/*`) or directory copy excluding large/irrelevant directories. |
-| 4    | **ACT**   | Applies the operation (Tree-sitter AST byte-range span rename preserving    |
-|      |           | comments/docstrings / block extraction / symbol move with import rewrites).  |
-| 5    | **VERIFY** | Runs the target repo's test suite. If tests pass → keep. If they fail →   |
-|      |           | **auto-rollback** from the snapshot and print a diagnosis pointing at the    |
-|      |           | dynamic-risk file.                                                           |
+| 1    | **MAP**   | Scans the repo for references with Tree-sitter, split into _static_ (calls, imports, definitions, member access) and _dynamic-risk_ (name in a string). Surfaces prior successful refactor runs (if any). |
+| 2    | **WARN**  | Prints dynamic-risk files **before anything changes**. Surfaces prior failure history and highlights repeat-offender dynamic-risk files (advisory only; non-blocking). |
+| 3    | **SNAPSHOT** | Scalable backup: zero-copy Git snapshot via throwaway refs (`refs/refactor-guard/*`) or directory copy excluding large/irrelevant directories. Transparent to CLI with identical signatures. |
+| 4    | **ACT**   | Applies the operation (Tree-sitter AST byte-range span rename in binary mode preserving comments/docstrings/strings; block extraction; symbol move with import rewrites). |
+| 5    | **VERIFY** | Runs the target repo's test suite. If tests pass → keep. If they fail → **auto-rollback** from the snapshot and print a diagnosis pointing at the dynamic-risk file. Records outcome in ledger. |
 
 ### Supported languages & Operations
 
@@ -67,6 +62,9 @@ Refactor Guard provides a scalable dual-strategy backup system in `src/snapshot.
 2. **Non-Git Repositories (Directory Copy Fallback)**:
    - Uses `shutil.copytree` to back up files into a temporary directory.
    - Automatically excludes large, non-source directories (`node_modules`, `.git`, `venv`, `.venv`, `env`, `__pycache__`, `.pytest_cache`, `.mypy_cache`) to minimize snapshot overhead and disk usage.
+
+3. **CLI & Pipeline Transparency**:
+   - The dual-strategy snapshot mechanism is completely transparent to the rest of Refactor Guard. Public function signatures (`create_snapshot(repo_root: str) -> str`, `restore_snapshot(backup_path: str, repo_root: str) -> None`, `cleanup_snapshot(backup_path: str) -> None`) remain strictly identical regardless of whether Git or directory copy is selected.
 
 ---
 
@@ -172,9 +170,83 @@ new module; `mathutils.build_report(...)` → bare `build_report(...)` + import)
 
 Add `--dry-run` to any subcommand (`rename`, `extract-function`, `move-symbol`) to:
 - Run **STEP 1: MAP** (static references, blast radius, AST parameter flow)
-- Run **STEP 2: WARN** (flag dynamic string risks and side effects)
-- Skip **SNAPSHOT**, **ACT**, and **VERIFY** (no files edited, no tests run)
+- Run **STEP 2: WARN** (flag dynamic string risks, prior history, and side effects)
+- Skip **SNAPSHOT**, **ACT**, and **VERIFY** (no files edited, no tests run, no ledger record appended)
 - Print a clear dry-run summary of all changes that would have been applied.
+
+---
+
+## Refactor Ledger & History (`.refactor-guard/ledger.jsonl`)
+
+Refactor Guard maintains a persistent audit trail of every completed refactor operation in `<repo_root>/.refactor-guard/ledger.jsonl`:
+
+- **Storage & Isolation**: Stored as newline-delimited JSON (JSONL). The `.refactor-guard/` directory is automatically gitignored and excluded from snapshots.
+- **Fail-Soft Persistence**: Writes occur strictly after rollback/cleanup completes. Any ledger I/O errors are caught fail-soft and never disrupt or alter the refactor's exit code.
+- **Pre-Flight Advisory Surfacing (STEP 1 & STEP 2)**:
+  - **STEP 1 (MAP)**: Surfaces prior successful operations concisely (`Note: this symbol was previously renamed successfully on <date>.`).
+  - **STEP 2 (WARN)**: If prior rolled-back attempts exist for the same operation and symbol, prints a formatted `PRIOR HISTORY` block with previous failure counts, dates, and implicated dynamic-risk files.
+  - **Repeat Offender Highlighting**: Any currently flagged dynamic-risk file that contributed to a prior rollback is tagged as a `(REPEAT OFFENDER — implicated in prior rollback)`.
+  - **Advisory Only**: Prior history warnings never abort, block, prompt, or alter execution flow or exit codes.
+
+### Inspect History via CLI (`history`)
+
+```bash
+# View all refactor history for a repository
+python -m src.main history --repo-root /path/to/project
+
+# Filter history for a specific symbol
+python -m src.main history --repo-root /path/to/project --symbol compute_total
+
+# Show only the last 5 records
+python -m src.main history --repo-root /path/to/project --limit 5
+
+# Output records as raw JSON for programmatic tools
+python -m src.main history --repo-root /path/to/project --json
+```
+
+---
+
+## Minimal Patch Guard (MPG) (`review-patch`)
+
+The **Minimal Patch Guard** is an automated review pipeline that detects over-fit, lazy, or dangerous patches produced by AI coding agents or human contributors before they are merged.
+
+### What MPG detects
+- **Hard-coded outputs & test-specific branches**: (e.g. `if input == "exact_test_case": return expected`).
+- **Test weakening & deletion**: Tests marked `skip`/`xfail`, removed assertions, or deleted test methods.
+- **Removed input dependencies**: Functions no longer using their arguments or computing dummy constants.
+- **Exception suppression & logic bypass**: Blind `try/except: pass` blocks, premature returns, disabled checks.
+- **Scope expansion & unrelated changes**: Touching files or symbols unrelated to the declared operation.
+- **Regression verification**: Compares baseline vs candidate test matrices (distinguishing new failures from pre-existing ones).
+- **Metamorphic & differential probes**: Evaluates changed pure functions against edge cases.
+
+### Inspect Patches via CLI (`review-patch`)
+
+```bash
+# Review current working tree against git HEAD with test verification
+python -m src.main review-patch --repo-root /path/to/project
+
+# Review against a specific git ref or base directory (without git)
+python -m src.main review-patch --repo-root /path/to/project --base-ref HEAD~1
+python -m src.main review-patch --repo-root /path/to/cand --base-ref /path/to/base
+
+# Skip test verification during fast review
+python -m src.main review-patch --repo-root /path/to/project --test-cmd ""
+
+# Enforce strict scope minimality and maximum file/line caps
+python -m src.main review-patch --repo-root /path/to/project \
+  --strict-minimality --max-files-changed 5 --max-lines-changed 100
+
+# Run generalization probes across changed pure functions
+python -m src.main review-patch --repo-root /path/to/project --run-generalization
+
+# Output structured JSON for automated pipelines & agents
+python -m src.main review-patch --repo-root /path/to/project --output-format json
+```
+
+### Exit Codes
+- `0`: Patch **Accepted** or **Warning** (clean or minor advisory findings).
+- `1`: **Requires Approval** (risky findings detected or new regressions found).
+- `2`: **Rejected** (critical findings, test weakening, or usage error).
 
 ---
 
@@ -245,13 +317,10 @@ rolled back, and the diagnosis points at `pkg/dynamic_call.js`.
 ## Run the unit tests
 
 ```bash
-python -m pytest tests/test_refactor_guard.py -v
+python -m pytest tests/ -v
 ```
 
-Coverage includes multi-language scanning (Python/JS/TS), rename,
-extract-function, move-symbol, snapshot rollback, and failure diagnosis for
-both pytest output (`NameError` / `AttributeError` / `ImportError`) and Node
-output (`TypeError` / `ReferenceError`).
+Coverage includes 137 tests across multi-language scanning (Python/JS/TS), AST span replacement with comment/docstring preservation, dual-strategy snapshots, extract-function, move-symbol, failure diagnosis, self-heal anti-hardcode guards, FastMCP server tools, and the persistent refactor ledger.
 
 ---
 
@@ -291,10 +360,22 @@ For Claude Desktop, Cursor, or Cline, add the server to your MCP configuration:
 
 Once registered, the AI assistant has access to the following tools:
 
+#### Core Refactoring Tools
 - `refactor_guard_rename(repo_root, symbol, to, test_cmd, dry_run=False)` — Safely rename a symbol across the project with blast radius analysis, dynamic warning checks, automated test verification, and snapshot rollback.
 - `refactor_guard_extract_function(repo_root, rel_file, start_line, end_line, name, test_cmd, dry_run=False)` — Extract a Python code block into a new function with automatic parameter and return inference.
 - `refactor_guard_move_symbol(repo_root, symbol, source, target, test_cmd, dry_run=False)` — Move a top-level symbol to another module with automatic import rewriting across all project files.
-- `refactor_rename`, `refactor_extract_function`, `refactor_move_symbol` (backward-compatible aliases).
+- `refactor_guard_history(repo_root, symbol="", limit=0)` — Query and view the persistent refactoring history and rollback records.
+- `refactor_rename`, `refactor_extract_function`, `refactor_move_symbol`, `refactor_history` (backward-compatible aliases).
+
+#### Minimal Patch Guard (MPG) Tools
+- `refactor_guard_review_patch(repo_root, base_ref="HEAD", test_cmd="pytest -q", ...)` — Complete multi-phase patch review returning structured JSON with risk score, decision, findings, and verification.
+- `refactor_guard_check_minimality(repo_root, base_ref="HEAD", ...)` — Check scope expansion and unrelated modified files without running tests.
+- `refactor_guard_check_generalization(repo_root, base_ref="HEAD", test_cmd="pytest -q")` — Probe pure functions against edge/metamorphic inputs and compare base vs candidate behaviour.
+- `refactor_guard_compare_runs(repo_root, base_ref="HEAD", test_cmd="pytest -q")` — Run matrix verification comparing baseline vs candidate failures.
+- `refactor_review_patch`, `refactor_check_minimality`, `refactor_check_generalization`, `refactor_compare_runs` (backward-compatible aliases).
+
+#### Agent Safety Prompt
+- `strict_refactoring_guidelines` — Exposes strict instructions barring agents from introducing narrow workarounds or test-specific hardcoding.
 
 ---
 
@@ -310,28 +391,35 @@ refactor-guard/
 │   ├── move_symbol.py        # ACT — move a definition + rewrite references
 │   ├── snapshot.py           # SNAPSHOT / ROLLBACK via Git throwaway ref or copytree fallback
 │   ├── test_runner.py        # VERIFY — subprocess + failure-parsing diagnosis
-│   └── main.py               # CLI entrypoint (3 commands, 5-step pipeline)
+│   ├── self_heal.py          # VERIFY — optional Gemini AI diagnosis and bounded retry
+│   ├── ledger.py             # Persistent refactor history store (.refactor-guard/ledger.jsonl)
+│   ├── minimal_patch_guard/  # Minimal Patch Guard (MPG) review pipeline
+│   │   ├── __init__.py       # review_patch pipeline orchestrator
+│   │   ├── _ts_subprocess.py # Isolated Tree-sitter worker with probe sentinel
+│   │   ├── ast_utils.py      # AST analysis for dependencies and symbols
+│   │   ├── behavior_checks.py# Exception suppression & bypass checks
+│   │   ├── dependency_checks.py # Input dependency tracking
+│   │   ├── metamorphic.py    # Metamorphic & edge-case generalization probes
+│   │   ├── models.py         # Data models and finding schemas
+│   │   ├── patch_parser.py   # Unified git diff parser and tree materializer
+│   │   ├── policy.py         # Configurable threshold rules
+│   │   ├── regression.py     # Matrix verification runner
+│   │   ├── reporter.py       # Formatted text & JSON reporter
+│   │   ├── scope_checks.py   # Scope and minimality analysis
+│   │   ├── scoring.py        # Multi-factor score and decision engine
+│   │   ├── static_checks.py  # Static heuristics for hardcoding & constants
+│   │   └── test_integrity.py # Detection of deleted/weakened assertions
+│   ├── mcp_server.py         # FastMCP server exposing refactor_guard_* and MPG tools
+│   └── main.py               # CLI entrypoint (rename, extract-function, move-symbol, history, review-patch)
 ├── tests/
-│   ├── test_refactor_guard.py
+│   ├── test_refactor_guard.py# Core pipeline, AST, snapshot, and CLI tests
+│   ├── test_ledger.py        # Persistent ledger, history CLI, and advisory warning tests
+│   ├── test_minimal_patch_guard.py # Minimal Patch Guard review pipeline tests
+│   ├── test_mcp_server.py    # MCP tool suite integration tests
+│   ├── test_self_heal_guard.py # Anti-hardcoding and model availability guard tests
 │   ├── sample_repo/          # Python fixture (reporter + dynamic-caller)
-│   │   ├── conftest.py
-│   │   ├── pkg/
-│   │   │   ├── __init__.py
-│   │   │   ├── mathutils.py
-│   │   │   ├── reporter.py
-│   │   │   └── dynamic_caller.py
-│   │   └── tests/
-│   │       ├── test_reporter.py
-│   │       └── test_dynamic.py
 │   └── sample_repo_js/       # JavaScript fixture (Node test runner)
-│       ├── package.json
-│       ├── pkg/
-│       │   ├── mathutils.js
-│       │   ├── reporter.js
-│       │   └── dynamic_call.js
-│       └── tests/
-│           ├── test_reporter.test.js
-│           └── test_dynamic.test.js
+├── test_reports/             # MPG verification run reports
 ├── demo_run.py               # runs all 5 demo scenarios
 ├── requirements.txt
 ├── .gitignore
