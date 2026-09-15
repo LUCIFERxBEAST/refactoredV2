@@ -2,11 +2,46 @@
 
 **Samsung PRISM Hackathon — Agentic Code Intelligence**
 
-A refactoring safety harness that detects stale references across a codebase
-before, during, and after a change — with automatic rollback when verification
-fails. Supports **three operations** (`rename`, `extract-function`,
-`move-symbol`) across **three syntaxes** (Python, JavaScript, TypeScript),
-all parsed with **Tree-sitter**.
+An autonomous safety layer for code refactoring: it doesn't just make a
+change, it maps the blast radius before acting, snapshots the repo, verifies
+the change against the real test suite, self-heals on failure, and — unlike
+a plain refactor tool — it can also **catch an AI agent's patch cheating its
+own tests** before it ever gets merged.
+
+Built to be called two ways: as a **CLI**, or as an **MCP server** any
+AI coding agent (Claude Code, Cursor, Cline, Claude Desktop) can invoke
+directly — so the safety check lives *inside* the agent's edit loop, not
+as an afterthought a human runs later.
+
+---
+
+## Why this is agentic, not just a refactor tool
+
+| Most refactor tools | Refactor Guard |
+|---|---|
+| Rename and hope the tests still pass | Maps blast radius + flags dynamic-risk references **before** touching anything |
+| Leave the repo broken if you were wrong | Snapshots first, auto-rolls back on test failure |
+| Give up when verification fails | Gets an AI root-cause diagnosis and retries once, autonomously |
+| Trust that a patch is what it claims to be | **Minimal Patch Guard**: detects hardcoded outputs, special-cased test inputs, weakened/deleted tests, and scope creep in *any* patch — including ones written by another AI agent |
+| Human-only, CLI-only | Exposed as MCP tools — any AI IDE agent can call it mid-task |
+
+## Core capabilities
+
+1. **Guarded refactoring** (`rename`, `extract-function`, `move-symbol`) —
+   Tree-sitter-parsed across Python/JS/TS, with a full
+   MAP → WARN → SNAPSHOT → ACT → VERIFY pipeline and automatic rollback.
+2. **Blast-radius analysis** — a networkx call graph computed *before* any
+   change, so impact is known ahead of time, not discovered after.
+3. **Self-heal** — on a failed verification, an LLM (Gemini) diagnoses the
+   root cause and the pipeline retries exactly once before rolling back.
+4. **Minimal Patch Guard** (`review-patch`) — reviews *any* patch (yours or
+   an agent's) against a baseline: flags hardcoded/special-cased outputs,
+   test-specific hacks, deleted or weakened tests, and unrelated scope
+   expansion. Scores the patch, decides accept/warn/require-approval/reject,
+   and can run generalization probes (edge/metamorphic/differential testing)
+   on changed pure functions to confirm the fix actually generalizes.
+5. **MCP server** — every capability above is callable by an AI coding agent
+   directly, not just from a terminal.
 
 ---
 
@@ -288,6 +323,7 @@ refactor-guard/
 ├── demo_run.py               # runs all 5 demo scenarios
 ├── requirements.txt
 ├── .gitignore
+├── LICENSE                   # MIT License
 └── README.md
 ```
 
@@ -295,4 +331,4 @@ refactor-guard/
 
 ## License
 
-Hackathon / educational use.
+MIT License — see [LICENSE](LICENSE) for full text.
